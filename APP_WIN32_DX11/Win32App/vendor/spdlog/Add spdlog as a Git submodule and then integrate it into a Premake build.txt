@@ -1,0 +1,121 @@
+1️ Add spdlog as a Git Submodule
+Bash
+
+Code kopieren
+# From your project root
+git submodule add https://github.com/gabime/spdlog.git external/spdlog
+git submodule update --init --recursive
+This will place spdlog in external/spdlog.
+
+2️ Premake Integration (Header-Only Mode — simplest)
+Since spdlog is header-only by default, you just need to add its include directory to your project.
+
+premake5.lua
+
+Lua
+
+Code kopieren
+workspace "MyProject"
+    configurations { "Debug", "Release" }
+    architecture "x86_64"
+    startproject "App"
+
+project "App"
+    kind "ConsoleApp"
+    language "C++"
+    cppdialect "C++17"
+    targetdir "bin/%{cfg.buildcfg}"
+    objdir "bin-int/%{cfg.buildcfg}"
+
+    files {
+        "src/**.h",
+        "src/**.cpp"
+    }
+
+    -- Include spdlog headers
+    includedirs {
+        "external/spdlog/include"
+    }
+
+    filter "configurations:Debug"
+        symbols "On"
+
+    filter "configurations:Release"
+        optimize "On"
+Pros: No extra build step, easiest setup.
+Cons: Slightly slower compile times for large projects.
+
+3️ Premake Integration (Compiled Library Mode — faster builds)
+If you want to compile spdlog as a static library for faster incremental builds:
+
+premake5.lua
+
+Lua
+
+Code kopieren
+workspace "MyProject"
+    configurations { "Debug", "Release" }
+    architecture "x86_64"
+    startproject "App"
+
+-- spdlog static library project
+project "spdlog"
+    kind "StaticLib"
+    language "C++"
+    cppdialect "C++17"
+    targetdir "bin/%{cfg.buildcfg}"
+    objdir "bin-int/%{cfg.buildcfg}"
+
+    files {
+        "external/spdlog/src/**.cpp"
+    }
+
+    includedirs {
+        "external/spdlog/include"
+    }
+
+-- Your main app
+project "App"
+    kind "ConsoleApp"
+    language "C++"
+    cppdialect "C++17"
+    targetdir "bin/%{cfg.buildcfg}"
+    objdir "bin-int/%{cfg.buildcfg}"
+
+    files {
+        "src/**.h",
+        "src/**.cpp"
+    }
+
+    includedirs {
+        "external/spdlog/include"
+    }
+
+    links { "spdlog" }
+
+    filter "configurations:Debug"
+        symbols "On"
+
+    filter "configurations:Release"
+        optimize "On"
+
+4️ Example Usage
+src/main.cpp
+
+Cpp
+
+Code kopieren
+#include "spdlog/spdlog.h"
+
+int main() {
+    spdlog::info("Hello from spdlog!");
+    spdlog::warn("This is a warning with number: {}", 42);
+    return 0;
+}
+
+5️ Build
+Bash
+
+Code kopieren
+premake5 gmake2   # or vs2022, xcode4, etc.
+make config=release

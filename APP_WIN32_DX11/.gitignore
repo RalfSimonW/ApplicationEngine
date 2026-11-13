@@ -1,0 +1,28 @@
+# Adding VS files to gitignore - Samstag, 5. Oktober 2019 16:20
+
+# Binaries
+bin/
+bin-int/
+!vendor/premake/bin/
+
+**.cso
+**.info
+**.ini
+
+**.shh
+
+**.obj
+!Win32App/Models/**/*.obj
+
+# Assimp
+!Win32App/assimp/*
+
+# Visual Studio files and folder
+.vs/
+**.sln
+**.vcxproj
+**.vcxproj.filters
+**.vcxproj.user
+
+# Directories
+scripts/__pycache__
