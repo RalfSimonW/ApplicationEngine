@@ -30,57 +30,351 @@
 
 using Microsoft::WRL::ComPtr;
 
+#ifndef RESIZE_DIAG_ENABLED
+#define RESIZE_DIAG_ENABLED 1
+#endif
 
+#ifndef SINGLE_THREAD_RENDER_TEST
+#define SINGLE_THREAD_RENDER_TEST 0
+#endif
+
+#if RESIZE_DIAG_ENABLED
 namespace ResizeDiag
 {
-    inline std::mutex logMutex;
+	inline std::mutex logMutex;
 
-    inline std::atomic<unsigned long long> wmSizeCount{ 0 };
-    inline std::atomic<unsigned long long> resizeBuffersCount{ 0 };
-    inline std::atomic<unsigned long long> rtvCreateCount{ 0 };
-    inline std::atomic<unsigned long long> presentCount{ 0 };
-    inline std::atomic<unsigned long long> presentFailureCount{ 0 };
+	// Existing lifetime counters
+	inline std::atomic<unsigned long long> wmSizeCount{ 0 };
+	inline std::atomic<unsigned long long> resizeBuffersCount{ 0 };
+	inline std::atomic<unsigned long long> rtvCreateCount{ 0 };
+	inline std::atomic<unsigned long long> presentCount{ 0 };
+	inline std::atomic<unsigned long long> presentFailureCount{ 0 };
 
-    inline std::atomic<unsigned long long> mainRtvCreateCount{ 0 };
-    inline std::atomic<unsigned long long> sceneRtvCreateCount{ 0 };
+	inline std::atomic<unsigned long long> mainRtvCreateCount{ 0 };
+	inline std::atomic<unsigned long long> sceneRtvCreateCount{ 0 };
 
-    // Only read/written on the render thread.
-    inline uint64_t sceneTextureGeneration = 0;
+	// New resize-duration measurements.
+	// These will be reset at the start of each interactive resize.
+	inline std::atomic<unsigned long long> resizeBuffersSuccessCount{ 0 };
+	inline std::atomic<unsigned long long> resizeBuffersTimedCount{ 0 };
+	inline std::atomic<unsigned long long> resizeBuffersTotalUs{ 0 };
+	inline std::atomic<unsigned long long> resizeBuffersMaxUs{ 0 };
 
-    inline void Log(const char* format, ...)
-    {
-        char message[512];
+	inline std::atomic<unsigned long long> presentTimedCount{ 0 };
+	inline std::atomic<unsigned long long> presentTimeUs{ 0 };
+	inline std::atomic<unsigned long long> presentMaxUs{ 0 };
 
-        va_list args;
-        va_start(args, format);
-        vsnprintf_s(message, sizeof(message), _TRUNCATE, format, args);
-        va_end(args);
+	inline std::atomic<unsigned long long> frameTimedCount{ 0 };
+	inline std::atomic<unsigned long long> frameTimeUs{ 0 };
+	inline std::atomic<unsigned long long> frameMaxUs{ 0 };
 
-        char line[640];
-        _snprintf_s(
-            line, sizeof(line), _TRUNCATE,
-            "[ResizeDiag %llu ms TID %lu] %s\n",
-            static_cast<unsigned long long>(GetTickCount64()),
-            GetCurrentThreadId(),
-            message);
+	inline std::atomic<unsigned long long> frameWorkTotalUs{ 0 };
+	inline std::atomic<unsigned long long> frameWorkMaxUs{ 0 };
 
-        std::lock_guard<std::mutex> lock(logMutex);
-        OutputDebugStringA(line);
-    }
+	inline std::atomic<unsigned long long> sceneApplyCount{ 0 };
+	inline std::atomic<unsigned long long> sceneApplyTotalUs{ 0 };
+	inline std::atomic<unsigned long long> sceneApplyMaxUs{ 0 };
 
-    inline void LogStats()
-    {
-        Log("totals: WM_SIZE=%llu ResizeBuffers=%llu RTV_create=%llu Present=%llu Present_failures=%llu "
-            "main_RTV_Create=%llu scene_RTV_Create=%llu",
-            wmSizeCount.load(),
-            resizeBuffersCount.load(),
-            rtvCreateCount.load(),
-            presentCount.load(),
-            presentFailureCount.load(),
-            mainRtvCreateCount.load(),
-            sceneRtvCreateCount.load());
-    }
+	// Packed size that the render thread has finished applying.
+	inline std::atomic<uint64_t> mainResizeAppliedSize{ 0 };
+
+	// Only read/written on the render thread.
+	inline uint64_t sceneTextureGeneration = 0;
+
+	inline std::mutex measurementMutex;
+	inline std::atomic<bool> measurementActive{ false };
+	inline std::atomic<uint64_t> measurementSessionId{ 0 };
+	inline std::chrono::steady_clock::time_point measurementStart;
+	inline uint64_t measurementFrameNumber = 0; // protected by measurementMutex
+
+
+	inline void Log(const char* format, ...)
+	{
+		char message[512];
+
+		va_list args;
+		va_start(args, format);
+		vsnprintf_s(message, sizeof(message), _TRUNCATE, format, args);
+		va_end(args);
+
+		char line[640];
+		_snprintf_s(
+			line,
+			sizeof(line),
+			_TRUNCATE,
+			"[ResizeDiag %llu ms TID %lu] %s\n",
+			static_cast<unsigned long long>(GetTickCount64()),
+			GetCurrentThreadId(),
+			message);
+
+		std::lock_guard<std::mutex> lock(logMutex);
+		OutputDebugStringA(line);
+	}
+
+	inline void UpdateMax(
+		std::atomic<unsigned long long>& maximum,
+		unsigned long long value)
+	{
+		unsigned long long oldValue = maximum.load();
+
+		while (value > oldValue &&
+			!maximum.compare_exchange_weak(oldValue, value))
+		{
+			// Retry if another thread changed maximum.
+		}
+	}
+
+	inline void ResetResizeMeasurements()
+	{
+		std::lock_guard<std::mutex> lock(measurementMutex);
+
+		measurementActive.store(false, std::memory_order_release);
+
+		resizeBuffersSuccessCount.store(0);
+		resizeBuffersTimedCount.store(0);
+		resizeBuffersTotalUs.store(0);
+		resizeBuffersMaxUs.store(0);
+
+		presentTimedCount.store(0);
+		presentTimeUs.store(0);
+		presentMaxUs.store(0);
+
+		frameTimedCount.store(0);
+		frameTimeUs.store(0);
+		frameMaxUs.store(0);
+
+		frameWorkTotalUs.store(0);
+		frameWorkMaxUs.store(0);
+
+		sceneApplyCount.store(0);
+		sceneApplyTotalUs.store(0);
+		sceneApplyMaxUs.store(0);
+
+		measurementFrameNumber = 0;
+		measurementStart = std::chrono::steady_clock::now();
+
+		const uint64_t session =
+			measurementSessionId.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+		measurementActive.store(true, std::memory_order_release);
+
+		Log("Resize measurement session #%llu begin",
+			static_cast<unsigned long long>(session));
+	}
+
+	inline uint64_t ActiveMeasurementSession()
+	{
+		if (!measurementActive.load(std::memory_order_acquire))
+			return 0;
+
+		return measurementSessionId.load(std::memory_order_acquire);
+	}
+
+	inline void RecordResizeBuffersTiming(
+		uint64_t session,
+		bool succeeded,
+		unsigned long long durationUs)
+	{
+		if (session == 0)
+			return;
+
+		std::lock_guard<std::mutex> lock(measurementMutex);
+
+		if (!measurementActive.load(std::memory_order_acquire) ||
+			session != measurementSessionId.load(std::memory_order_acquire))
+		{
+			return;
+		}
+
+		resizeBuffersTimedCount.fetch_add(1);
+		resizeBuffersTotalUs.fetch_add(durationUs);
+		UpdateMax(resizeBuffersMaxUs, durationUs);
+
+		if (succeeded)
+			resizeBuffersSuccessCount.fetch_add(1);
+	}
+
+	inline void RecordFrameTiming(
+		uint64_t session,
+		unsigned long long frameUs,
+		unsigned long long presentUs,
+		unsigned long long sceneApplyUs,
+		unsigned long long mainResizeUs,
+		unsigned long long renderSceneUs,
+		unsigned long long imguiBuildUs,
+		unsigned long long mainDrawUs,
+		unsigned long long platformWindowsUs,
+		bool sceneApplyCalled)
+	{
+		if (session == 0)
+			return;
+
+		uint64_t frameNumber = 0;
+		unsigned long long outsidePresentUs = 0;
+		bool logSlowFrame = false;
+
+		{
+			std::lock_guard<std::mutex> lock(measurementMutex);
+
+			if (!measurementActive.load(std::memory_order_acquire) ||
+				session != measurementSessionId.load(std::memory_order_acquire))
+			{
+				return;
+			}
+
+			frameNumber = ++measurementFrameNumber;
+
+			frameTimedCount.fetch_add(1);
+			frameTimeUs.fetch_add(frameUs);
+			UpdateMax(frameMaxUs, frameUs);
+
+			presentTimedCount.fetch_add(1);
+			presentTimeUs.fetch_add(presentUs);
+			UpdateMax(presentMaxUs, presentUs);
+
+			outsidePresentUs =
+				frameUs > presentUs ? frameUs - presentUs : 0;
+
+			frameWorkTotalUs.fetch_add(outsidePresentUs);
+			UpdateMax(frameWorkMaxUs, outsidePresentUs);
+
+			if (sceneApplyCalled)
+			{
+				sceneApplyCount.fetch_add(1);
+				sceneApplyTotalUs.fetch_add(sceneApplyUs);
+				UpdateMax(sceneApplyMaxUs, sceneApplyUs);
+			}
+
+			logSlowFrame = frameUs >= 12000; // 12 ms
+		}
+
+		if (logSlowFrame)
+		{
+			const unsigned long long measuredUs =
+				mainResizeUs +
+				(sceneApplyCalled ? sceneApplyUs : 0) +
+				renderSceneUs +
+				imguiBuildUs +
+				mainDrawUs +
+				platformWindowsUs;
+
+			const unsigned long long otherOutsidePresentUs =
+				outsidePresentUs > measuredUs
+				? outsidePresentUs - measuredUs
+				: 0;
+
+			Log("Resize frame #%llu: frame=%llu us Present=%llu us "
+				"outsidePresent=%llu us MainResize=%llu us "
+				"ApplySceneResize=%llu us RenderScene=%llu us "
+				"ImGuiBuild=%llu us MainDraw=%llu us Viewports=%llu us "
+				"other=%llu us",
+				static_cast<unsigned long long>(frameNumber),
+				frameUs,
+				presentUs,
+				outsidePresentUs,
+				mainResizeUs,
+				sceneApplyUs,
+				renderSceneUs,
+				imguiBuildUs,
+				mainDrawUs,
+				platformWindowsUs,
+				otherOutsidePresentUs);
+		}
+	}
+
+	inline void LogStats()
+	{
+		Log(
+			"totals: WM_SIZE=%llu ResizeBuffers=%llu RTV_create=%llu "
+			"Present=%llu Present_failures=%llu main_RTV_Create=%llu "
+			"scene_RTV_Create=%llu",
+			wmSizeCount.load(),
+			resizeBuffersCount.load(),
+			rtvCreateCount.load(),
+			presentCount.load(),
+			presentFailureCount.load(),
+			mainRtvCreateCount.load(),
+			sceneRtvCreateCount.load());
+
+		const unsigned long long resizeCalls =
+			resizeBuffersTimedCount.load();
+		const unsigned long long resizeTotalUs =
+			resizeBuffersTotalUs.load();
+
+		const unsigned long long presentCalls =
+			presentTimedCount.load();
+		const unsigned long long presentTotalUs =
+			presentTimeUs.load();
+
+		Log(
+			"resize timings: ResizeBuffers successes=%llu calls=%llu "
+			"avg=%llu us max=%llu us; Present calls=%llu avg=%llu us "
+			"max=%llu us",
+			resizeBuffersSuccessCount.load(),
+			resizeCalls,
+			resizeCalls ? resizeTotalUs / resizeCalls : 0,
+			resizeBuffersMaxUs.load(),
+			presentCalls,
+			presentCalls ? presentTotalUs / presentCalls : 0,
+			presentMaxUs.load());
+
+		const unsigned long long frameCalls =
+			frameTimedCount.load();
+		const unsigned long long frameTotalUs =
+			frameTimeUs.load();
+		const unsigned long long frameWorkTotal =
+			frameWorkTotalUs.load();
+
+		Log(
+			"frame timings: frames=%llu avg=%llu us max=%llu us; "
+			"outside main Present avg=%llu us max=%llu us",
+			frameCalls,
+			frameCalls ? frameTotalUs / frameCalls : 0,
+			frameMaxUs.load(),
+			frameCalls ? frameWorkTotal / frameCalls : 0,
+			frameWorkMaxUs.load());
+
+		const unsigned long long sceneApplyCalls =
+			sceneApplyCount.load();
+		const unsigned long long sceneApplyTotal =
+			sceneApplyTotalUs.load();
+
+		Log(
+			"ApplySceneResize: calls=%llu avg=%llu us max=%llu us",
+			sceneApplyCalls,
+			sceneApplyCalls ? sceneApplyTotal / sceneApplyCalls : 0,
+			sceneApplyMaxUs.load());
+	}
+
+	inline void EndResizeMeasurements(const char* reason)
+	{
+		uint64_t session = 0;
+		long long elapsedMs = 0;
+
+		{
+			std::lock_guard<std::mutex> lock(measurementMutex);
+
+			if (!measurementActive.load(std::memory_order_acquire))
+				return;
+
+			session = measurementSessionId.load(std::memory_order_acquire);
+			elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - measurementStart).count();
+
+			// RecordFrameTiming and RecordResizeBuffersTiming use the same mutex,
+			// so no measurement update can still be in progress after this.
+			measurementActive.store(false, std::memory_order_release);
+		}
+
+		Log("Resize measurement session #%llu end reason=%s elapsed=%lld ms",
+			static_cast<unsigned long long>(session),
+			reason ? reason : "unspecified",
+			elapsedMs);
+
+		LogStats();
+	}
 }
+#endif
 
 // -----------------------------------------------------------------------------
 // Shared state
@@ -88,46 +382,46 @@ namespace ResizeDiag
 
 struct SceneSnapshot
 {
-    float angle = 0.0f;
+	float angle = 0.0f;
 };
 
 struct InputEvent
 {
-    UINT message = 0;
-    WPARAM wParam = 0;
-    LPARAM lParam = 0;
-    bool ctrl = false;
-    bool shift = false;
-    bool alt = false;
+	UINT message = 0;
+	WPARAM wParam = 0;
+	LPARAM lParam = 0;
+	bool ctrl = false;
+	bool shift = false;
+	bool alt = false;
 };
 
 struct D3DState
 {
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    ComPtr<IDXGISwapChain> swapChain;
-    ComPtr<ID3D11RenderTargetView> backBufferRTV;
+	ComPtr<ID3D11Device> device;
+	ComPtr<ID3D11DeviceContext> context;
+	ComPtr<IDXGISwapChain> swapChain;
+	ComPtr<ID3D11RenderTargetView> backBufferRTV;
 
-    ComPtr<ID3D11Texture2D> sceneTexture;
-    ComPtr<ID3D11RenderTargetView> sceneRTV;
-    ComPtr<ID3D11ShaderResourceView> sceneSRV;
+	ComPtr<ID3D11Texture2D> sceneTexture;
+	ComPtr<ID3D11RenderTargetView> sceneRTV;
+	ComPtr<ID3D11ShaderResourceView> sceneSRV;
 
-    ComPtr<ID3D11VertexShader> sceneVS;
-    ComPtr<ID3D11PixelShader> scenePS;
-    ComPtr<ID3D11Buffer> sceneConstantBuffer;
-    ComPtr<ID3D11RasterizerState> sceneRasterizerState;
+	ComPtr<ID3D11VertexShader> sceneVS;
+	ComPtr<ID3D11PixelShader> scenePS;
+	ComPtr<ID3D11Buffer> sceneConstantBuffer;
+	ComPtr<ID3D11RasterizerState> sceneRasterizerState;
 
-    UINT backBufferWidth = 0;
-    UINT backBufferHeight = 0;
-    UINT sceneWidth = 0;
-    UINT sceneHeight = 0;
+	UINT backBufferWidth = 0;
+	UINT backBufferHeight = 0;
+	UINT sceneWidth = 0;
+	UINT sceneHeight = 0;
 };
 
 static HWND g_hwnd = nullptr;
 static std::atomic<bool> g_running{ true };
 
 static std::atomic<std::shared_ptr<const SceneSnapshot>> g_snapshot{
-    std::make_shared<const SceneSnapshot>()
+	std::make_shared<const SceneSnapshot>()
 };
 
 static std::atomic<uint64_t> g_mainResizeRequest{ 0 };
@@ -144,34 +438,34 @@ static D3DState g_d3d;
 // Pack width and height into one atomic 64-bit value.
 static uint64_t PackSize(UINT width, UINT height)
 {
-    return (static_cast<uint64_t>(width) << 32) |
-        static_cast<uint64_t>(height);
+	return (static_cast<uint64_t>(width) << 32) |
+		static_cast<uint64_t>(height);
 }
 
 static void UnpackSize(uint64_t packed, UINT& width, UINT& height)
 {
-    width = static_cast<UINT>(packed >> 32);
-    height = static_cast<UINT>(packed & 0xFFFFFFFFu);
+	width = static_cast<UINT>(packed >> 32);
+	height = static_cast<UINT>(packed & 0xFFFFFFFFu);
 }
 
 static float DpiScale(HWND hwnd)
 {
-    const UINT dpi = GetDpiForWindow(hwnd);
-    return static_cast<float>(dpi ? dpi : 96) / 96.0f;
+	const UINT dpi = GetDpiForWindow(hwnd);
+	return static_cast<float>(dpi ? dpi : 96) / 96.0f;
 }
 
 static void QueueInput(UINT message, WPARAM wParam, LPARAM lParam)
 {
-    InputEvent event{};
-    event.message = message;
-    event.wParam = wParam;
-    event.lParam = lParam;
-    event.ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    event.shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-    event.alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+	InputEvent event{};
+	event.message = message;
+	event.wParam = wParam;
+	event.lParam = lParam;
+	event.ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+	event.shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+	event.alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
 
-    std::lock_guard lock(g_inputMutex);
-    g_inputQueue.push_back(event);
+	std::lock_guard lock(g_inputMutex);
+	g_inputQueue.push_back(event);
 }
 
 // -----------------------------------------------------------------------------
@@ -180,62 +474,66 @@ static void QueueInput(UINT message, WPARAM wParam, LPARAM lParam)
 
 static void Log(const char* text)
 {
-    OutputDebugStringA(text);
-    OutputDebugStringA("\n");
+	OutputDebugStringA(text);
+	OutputDebugStringA("\n");
 }
 
 static void LogHr(const char* operation, HRESULT hr)
 {
-    char text[256]{};
-    std::snprintf(
-        text, sizeof(text),
-        "%s failed (HRESULT=0x%08lX)",
-        operation, static_cast<unsigned long>(hr));
-    Log(text);
+	char text[256]{};
+	std::snprintf(
+		text, sizeof(text),
+		"%s failed (HRESULT=0x%08lX)",
+		operation, static_cast<unsigned long>(hr));
+	Log(text);
 }
 
 static bool CreateBackBufferRTV()
 {
-    ComPtr<ID3D11Texture2D> backBuffer;
+	ComPtr<ID3D11Texture2D> backBuffer;
 
-    HRESULT hr = g_d3d.swapChain->GetBuffer(
-        0, IID_PPV_ARGS(backBuffer.GetAddressOf()));
+	HRESULT hr = g_d3d.swapChain->GetBuffer(
+		0, IID_PPV_ARGS(backBuffer.GetAddressOf()));
 
-    if (FAILED(hr))
-    {
-        LogHr("GetBuffer(back buffer)", hr);
-        return false;
-    }
+	if (FAILED(hr))
+	{
+		LogHr("GetBuffer(back buffer)", hr);
+		return false;
+	}
 
-    D3D11_TEXTURE2D_DESC desc{};
-    backBuffer->GetDesc(&desc);
+	D3D11_TEXTURE2D_DESC desc{};
+	backBuffer->GetDesc(&desc);
 
-    const auto total = ++ResizeDiag::rtvCreateCount;
-    const auto number = ++ResizeDiag::mainRtvCreateCount;
+#if RESIZE_DIAG_ENABLED
+	const auto total = ++ResizeDiag::rtvCreateCount;
+	const auto number = ++ResizeDiag::mainRtvCreateCount;
 
-    ResizeDiag::Log(
-        "MainSwapChainRTV #%llu total=%llu begin size=%ux%u resource=%p",
-        number, total, desc.Width, desc.Height,
-        static_cast<void*>(backBuffer.Get()));
+	ResizeDiag::Log(
+		"MainSwapChainRTV #%llu total=%llu begin size=%ux%u resource=%p",
+		number, total, desc.Width, desc.Height,
+		static_cast<void*>(backBuffer.Get()));
+#endif
 
-    ComPtr<ID3D11RenderTargetView> newRTV;
-    hr = g_d3d.device->CreateRenderTargetView(
-        backBuffer.Get(), nullptr, newRTV.GetAddressOf());
+	ComPtr<ID3D11RenderTargetView> newRTV;
+	hr = g_d3d.device->CreateRenderTargetView(
+		backBuffer.Get(), nullptr, newRTV.GetAddressOf());
 
-    ResizeDiag::Log(
-        "MainSwapChainRTV #%llu end hr=0x%08X",
-        number, static_cast<unsigned int>(hr));
+#if RESIZE_DIAG_ENABLED
+	ResizeDiag::Log(
+		"MainSwapChainRTV #%llu end hr=0x%08X",
+		number, static_cast<unsigned int>(hr));
+#endif
 
-    if (FAILED(hr))
-    {
-        LogHr("CreateRenderTargetView(back buffer)", hr);
-        return false;
-    }
+	if (FAILED(hr))
+	{
+		LogHr("CreateRenderTargetView(back buffer)", hr);
+		return false;
+	}
 
-    g_d3d.backBufferRTV = std::move(newRTV);
-    g_d3d.backBufferWidth = desc.Width;
-    g_d3d.backBufferHeight = desc.Height;
-    return true;
+	g_d3d.backBufferRTV = std::move(newRTV);
+	g_d3d.backBufferWidth = desc.Width;
+	g_d3d.backBufferHeight = desc.Height;
+	return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -244,80 +542,80 @@ static bool CreateBackBufferRTV()
 
 static bool CreateD3D(HWND hwnd)
 {
-    RECT rc{};
-    GetClientRect(hwnd, &rc);
+	RECT rc{};
+	GetClientRect(hwnd, &rc);
 
-    const UINT width = std::max<UINT>(
-        1, static_cast<UINT>(rc.right - rc.left));
-    const UINT height = std::max<UINT>(
-        1, static_cast<UINT>(rc.bottom - rc.top));
+	const UINT width = std::max<UINT>(
+		1, static_cast<UINT>(rc.right - rc.left));
+	const UINT height = std::max<UINT>(
+		1, static_cast<UINT>(rc.bottom - rc.top));
 
-    DXGI_SWAP_CHAIN_DESC swapDesc{};
-    swapDesc.BufferDesc.Width = width;
-    swapDesc.BufferDesc.Height = height;
-    swapDesc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    swapDesc.BufferDesc.RefreshRate.Numerator = 60;
-    swapDesc.BufferDesc.RefreshRate.Denominator = 1;
-    swapDesc.SampleDesc.Count = 1;
-    swapDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swapDesc.BufferCount = 2;
-    swapDesc.OutputWindow = hwnd;
-    swapDesc.Windowed = TRUE;
-    swapDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+	DXGI_SWAP_CHAIN_DESC swapDesc{};
+	swapDesc.BufferDesc.Width = width;
+	swapDesc.BufferDesc.Height = height;
+	swapDesc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	swapDesc.BufferDesc.RefreshRate.Numerator = 60;
+	swapDesc.BufferDesc.RefreshRate.Denominator = 1;
+	swapDesc.SampleDesc.Count = 1;
+	swapDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	swapDesc.BufferCount = 2;
+	swapDesc.OutputWindow = hwnd;
+	swapDesc.Windowed = TRUE;
+	swapDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-    const D3D_FEATURE_LEVEL requestedLevels[] =
-    {
-        D3D_FEATURE_LEVEL_11_1,
-        D3D_FEATURE_LEVEL_11_0
-    };
+	const D3D_FEATURE_LEVEL requestedLevels[] =
+	{
+		D3D_FEATURE_LEVEL_11_1,
+		D3D_FEATURE_LEVEL_11_0
+	};
 
-    D3D_FEATURE_LEVEL featureLevel{};
-    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+	D3D_FEATURE_LEVEL featureLevel{};
+	UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(
-        nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
-        nullptr,
-        flags,
-        requestedLevels,
-        static_cast<UINT>(std::size(requestedLevels)),
-        D3D11_SDK_VERSION,
-        &swapDesc,
-        g_d3d.swapChain.GetAddressOf(),
-        g_d3d.device.GetAddressOf(),
-        &featureLevel,
-        g_d3d.context.GetAddressOf());
+	HRESULT hr = D3D11CreateDeviceAndSwapChain(
+		nullptr,
+		D3D_DRIVER_TYPE_HARDWARE,
+		nullptr,
+		flags,
+		requestedLevels,
+		static_cast<UINT>(std::size(requestedLevels)),
+		D3D11_SDK_VERSION,
+		&swapDesc,
+		g_d3d.swapChain.GetAddressOf(),
+		g_d3d.device.GetAddressOf(),
+		&featureLevel,
+		g_d3d.context.GetAddressOf());
 
-    // Some older runtimes reject the 11_1 feature-level value.
-    if (hr == E_INVALIDARG)
-    {
-        const D3D_FEATURE_LEVEL fallbackLevels[] =
-        {
-            D3D_FEATURE_LEVEL_11_0
-        };
+	// Some older runtimes reject the 11_1 feature-level value.
+	if (hr == E_INVALIDARG)
+	{
+		const D3D_FEATURE_LEVEL fallbackLevels[] =
+		{
+			D3D_FEATURE_LEVEL_11_0
+		};
 
-        hr = D3D11CreateDeviceAndSwapChain(
-            nullptr,
-            D3D_DRIVER_TYPE_HARDWARE,
-            nullptr,
-            flags,
-            fallbackLevels,
-            1,
-            D3D11_SDK_VERSION,
-            &swapDesc,
-            g_d3d.swapChain.GetAddressOf(),
-            g_d3d.device.GetAddressOf(),
-            &featureLevel,
-            g_d3d.context.GetAddressOf());
-    }
+		hr = D3D11CreateDeviceAndSwapChain(
+			nullptr,
+			D3D_DRIVER_TYPE_HARDWARE,
+			nullptr,
+			flags,
+			fallbackLevels,
+			1,
+			D3D11_SDK_VERSION,
+			&swapDesc,
+			g_d3d.swapChain.GetAddressOf(),
+			g_d3d.device.GetAddressOf(),
+			&featureLevel,
+			g_d3d.context.GetAddressOf());
+	}
 
-    if (FAILED(hr))
-    {
-        LogHr("D3D11CreateDeviceAndSwapChain", hr);
-        return false;
-    }
+	if (FAILED(hr))
+	{
+		LogHr("D3D11CreateDeviceAndSwapChain", hr);
+		return false;
+	}
 
-    return CreateBackBufferRTV();
+	return CreateBackBufferRTV();
 }
 
 // -----------------------------------------------------------------------------
@@ -325,42 +623,42 @@ static bool CreateD3D(HWND hwnd)
 // -----------------------------------------------------------------------------
 
 static bool CompileShader(
-    const char* source,
-    const char* entryPoint,
-    const char* target,
-    ComPtr<ID3DBlob>& bytecode)
+	const char* source,
+	const char* entryPoint,
+	const char* target,
+	ComPtr<ID3DBlob>& bytecode)
 {
-    ComPtr<ID3DBlob> errors;
+	ComPtr<ID3DBlob> errors;
 
-    const HRESULT hr = D3DCompile(
-        source,
-        std::strlen(source),
-        nullptr,
-        nullptr,
-        nullptr,
-        entryPoint,
-        target,
-        D3DCOMPILE_ENABLE_STRICTNESS,
-        0,
-        bytecode.GetAddressOf(),
-        errors.GetAddressOf());
+	const HRESULT hr = D3DCompile(
+		source,
+		std::strlen(source),
+		nullptr,
+		nullptr,
+		nullptr,
+		entryPoint,
+		target,
+		D3DCOMPILE_ENABLE_STRICTNESS,
+		0,
+		bytecode.GetAddressOf(),
+		errors.GetAddressOf());
 
-    if (FAILED(hr))
-    {
-        if (errors)
-            OutputDebugStringA(
-                static_cast<const char*>(errors->GetBufferPointer()));
+	if (FAILED(hr))
+	{
+		if (errors)
+			OutputDebugStringA(
+				static_cast<const char*>(errors->GetBufferPointer()));
 
-        LogHr("D3DCompile", hr);
-        return false;
-    }
+		LogHr("D3DCompile", hr);
+		return false;
+	}
 
-    return true;
+	return true;
 }
 
 static bool CreateScenePipeline()
 {
-    static constexpr char shaderSource[] = R"(
+	static constexpr char shaderSource[] = R"(
         cbuffer SceneConstants : register(b0)
         {
             float angle;
@@ -409,75 +707,75 @@ static bool CreateScenePipeline()
         }
     )";
 
-    ComPtr<ID3DBlob> vsBytecode;
-    ComPtr<ID3DBlob> psBytecode;
+	ComPtr<ID3DBlob> vsBytecode;
+	ComPtr<ID3DBlob> psBytecode;
 
-    if (!CompileShader(shaderSource, "VSMain", "vs_5_0", vsBytecode))
-        return false;
+	if (!CompileShader(shaderSource, "VSMain", "vs_5_0", vsBytecode))
+		return false;
 
-    if (!CompileShader(shaderSource, "PSMain", "ps_5_0", psBytecode))
-        return false;
+	if (!CompileShader(shaderSource, "PSMain", "ps_5_0", psBytecode))
+		return false;
 
-    HRESULT hr = g_d3d.device->CreateVertexShader(
-        vsBytecode->GetBufferPointer(),
-        vsBytecode->GetBufferSize(),
-        nullptr,
-        g_d3d.sceneVS.GetAddressOf());
+	HRESULT hr = g_d3d.device->CreateVertexShader(
+		vsBytecode->GetBufferPointer(),
+		vsBytecode->GetBufferSize(),
+		nullptr,
+		g_d3d.sceneVS.GetAddressOf());
 
-    if (FAILED(hr))
-    {
-        LogHr("CreateVertexShader", hr);
-        return false;
-    }
+	if (FAILED(hr))
+	{
+		LogHr("CreateVertexShader", hr);
+		return false;
+	}
 
-    hr = g_d3d.device->CreatePixelShader(
-        psBytecode->GetBufferPointer(),
-        psBytecode->GetBufferSize(),
-        nullptr,
-        g_d3d.scenePS.GetAddressOf());
+	hr = g_d3d.device->CreatePixelShader(
+		psBytecode->GetBufferPointer(),
+		psBytecode->GetBufferSize(),
+		nullptr,
+		g_d3d.scenePS.GetAddressOf());
 
-    if (FAILED(hr))
-    {
-        LogHr("CreatePixelShader", hr);
-        return false;
-    }
+	if (FAILED(hr))
+	{
+		LogHr("CreatePixelShader", hr);
+		return false;
+	}
 
-    D3D11_BUFFER_DESC bufferDesc{};
-    bufferDesc.ByteWidth = 16;
-    bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
-    bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-    bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+	D3D11_BUFFER_DESC bufferDesc{};
+	bufferDesc.ByteWidth = 16;
+	bufferDesc.Usage = D3D11_USAGE_DYNAMIC;
+	bufferDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+	bufferDesc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 
-    hr = g_d3d.device->CreateBuffer(
-        &bufferDesc,
-        nullptr,
-        g_d3d.sceneConstantBuffer.GetAddressOf());
+	hr = g_d3d.device->CreateBuffer(
+		&bufferDesc,
+		nullptr,
+		g_d3d.sceneConstantBuffer.GetAddressOf());
 
-    if (FAILED(hr))
-    {
-        LogHr("CreateBuffer(scene constants)", hr);
-        return false;
-    }
+	if (FAILED(hr))
+	{
+		LogHr("CreateBuffer(scene constants)", hr);
+		return false;
+	}
 
-    // Explicitly disable culling. The scene pass sets this state every frame,
-    // rather than depending on state left by ImGui or another pass.
-    D3D11_RASTERIZER_DESC rasterDesc{};
-    rasterDesc.FillMode = D3D11_FILL_SOLID;
-    rasterDesc.CullMode = D3D11_CULL_NONE;
-    rasterDesc.DepthClipEnable = TRUE;
-    rasterDesc.ScissorEnable = FALSE;
+	// Explicitly disable culling. The scene pass sets this state every frame,
+	// rather than depending on state left by ImGui or another pass.
+	D3D11_RASTERIZER_DESC rasterDesc{};
+	rasterDesc.FillMode = D3D11_FILL_SOLID;
+	rasterDesc.CullMode = D3D11_CULL_NONE;
+	rasterDesc.DepthClipEnable = TRUE;
+	rasterDesc.ScissorEnable = FALSE;
 
-    hr = g_d3d.device->CreateRasterizerState(
-        &rasterDesc,
-        g_d3d.sceneRasterizerState.GetAddressOf());
+	hr = g_d3d.device->CreateRasterizerState(
+		&rasterDesc,
+		g_d3d.sceneRasterizerState.GetAddressOf());
 
-    if (FAILED(hr))
-    {
-        LogHr("CreateRasterizerState(scene)", hr);
-        return false;
-    }
+	if (FAILED(hr))
+	{
+		LogHr("CreateRasterizerState(scene)", hr);
+		return false;
+	}
 
-    return true;
+	return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -486,220 +784,273 @@ static bool CreateScenePipeline()
 
 static bool ResizeSceneTexture(UINT width, UINT height)
 {
-    width = std::clamp<UINT>(width, 1, 8192);
-    height = std::clamp<UINT>(height, 1, 8192);
+	width = std::clamp<UINT>(width, 1, 8192);
+	height = std::clamp<UINT>(height, 1, 8192);
 
-    if (width == g_d3d.sceneWidth &&
-        height == g_d3d.sceneHeight &&
-        g_d3d.sceneRTV &&
-        g_d3d.sceneSRV)
-    {
-        return true;
-    }
+	if (width == g_d3d.sceneWidth &&
+		height == g_d3d.sceneHeight &&
+		g_d3d.sceneRTV &&
+		g_d3d.sceneSRV)
+	{
+		return true;
+	}
 
-    D3D11_TEXTURE2D_DESC textureDesc{};
-    textureDesc.Width = width;
-    textureDesc.Height = height;
-    textureDesc.MipLevels = 1;
-    textureDesc.ArraySize = 1;
-    textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    textureDesc.SampleDesc.Count = 1;
-    textureDesc.Usage = D3D11_USAGE_DEFAULT;
-    textureDesc.BindFlags =
-        D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+	D3D11_TEXTURE2D_DESC textureDesc{};
+	textureDesc.Width = width;
+	textureDesc.Height = height;
+	textureDesc.MipLevels = 1;
+	textureDesc.ArraySize = 1;
+	textureDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	textureDesc.SampleDesc.Count = 1;
+	textureDesc.Usage = D3D11_USAGE_DEFAULT;
+	textureDesc.BindFlags =
+		D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
 
-    // Build the replacement resources first. If any creation fails, the
-    // currently usable scene texture and its views remain untouched.
-    ComPtr<ID3D11Texture2D> newTexture;
-    ComPtr<ID3D11RenderTargetView> newRTV;
-    ComPtr<ID3D11ShaderResourceView> newSRV;
+	// Build the replacement resources first. If any creation fails, the
+	// currently usable scene texture and its views remain untouched.
+	ComPtr<ID3D11Texture2D> newTexture;
+	ComPtr<ID3D11RenderTargetView> newRTV;
+	ComPtr<ID3D11ShaderResourceView> newSRV;
 
-    HRESULT hr = g_d3d.device->CreateTexture2D(
-        &textureDesc,
-        nullptr,
-        newTexture.GetAddressOf());
+	HRESULT hr = g_d3d.device->CreateTexture2D(
+		&textureDesc,
+		nullptr,
+		newTexture.GetAddressOf());
 
-    if (FAILED(hr))
-    {
-        LogHr("CreateTexture2D(scene)", hr);
-        return false;
-    }
+	if (FAILED(hr))
+	{
+		LogHr("CreateTexture2D(scene)", hr);
+		return false;
+	}
 
-    const auto total = ++ResizeDiag::rtvCreateCount;
-    const auto number = ++ResizeDiag::sceneRtvCreateCount;
+#if RESIZE_DIAG_ENABLED
+	const auto total = ++ResizeDiag::rtvCreateCount;
+	const auto number = ++ResizeDiag::sceneRtvCreateCount;
 
-    ResizeDiag::Log(
-        "SceneRTV #%llu total=%llu begin size=%ux%u texture=%p",
-        number, total, width, height,
-        static_cast<void*>(newTexture.Get()));
+	ResizeDiag::Log(
+		"SceneRTV #%llu total=%llu begin size=%ux%u texture=%p",
+		number, total, width, height,
+		static_cast<void*>(newTexture.Get()));
+#endif
 
-    hr = g_d3d.device->CreateRenderTargetView(
-        newTexture.Get(),
-        nullptr,
-        newRTV.GetAddressOf());
+	hr = g_d3d.device->CreateRenderTargetView(
+		newTexture.Get(),
+		nullptr,
+		newRTV.GetAddressOf());
 
-    ResizeDiag::Log(
-        "SceneRTV #%llu end size=%ux%u hr=0x%08X",
-        number, width, height, static_cast<unsigned int>(hr));
+#if RESIZE_DIAG_ENABLED
+	ResizeDiag::Log(
+		"SceneRTV #%llu end size=%ux%u hr=0x%08X",
+		number, width, height, static_cast<unsigned int>(hr));
+#endif
 
-    if (FAILED(hr))
-    {
-        LogHr("CreateRenderTargetView(scene)", hr);
-        return false;
-    }
+	if (FAILED(hr))
+	{
+		LogHr("CreateRenderTargetView(scene)", hr);
+		return false;
+	}
 
-    hr = g_d3d.device->CreateShaderResourceView(
-        newTexture.Get(),
-        nullptr,
-        newSRV.GetAddressOf());
+	hr = g_d3d.device->CreateShaderResourceView(
+		newTexture.Get(),
+		nullptr,
+		newSRV.GetAddressOf());
 
-    if (FAILED(hr))
-    {
-        LogHr("CreateShaderResourceView(scene)", hr);
-        return false;
-    }
+	if (FAILED(hr))
+	{
+		LogHr("CreateShaderResourceView(scene)", hr);
+		return false;
+	}
 
-    // Detach the old texture from the pipeline before releasing it. The
-    // render thread should be the only thread executing D3D context calls.
-    ID3D11ShaderResourceView* nullSRV = nullptr;
-    g_d3d.context->PSSetShaderResources(0, 1, &nullSRV);
-    g_d3d.context->OMSetRenderTargets(0, nullptr, nullptr);
+	// Detach the old texture from the pipeline before releasing it. The
+	// render thread should be the only thread executing D3D context calls.
+	ID3D11ShaderResourceView* nullSRV = nullptr;
+	g_d3d.context->PSSetShaderResources(0, 1, &nullSRV);
+	g_d3d.context->OMSetRenderTargets(0, nullptr, nullptr);
 
-    g_d3d.sceneTexture = std::move(newTexture);
-    g_d3d.sceneRTV = std::move(newRTV);
-    g_d3d.sceneSRV = std::move(newSRV);
-    g_d3d.sceneWidth = width;
-    g_d3d.sceneHeight = height;
+	g_d3d.sceneTexture = std::move(newTexture);
+	g_d3d.sceneRTV = std::move(newRTV);
+	g_d3d.sceneSRV = std::move(newSRV);
+	g_d3d.sceneWidth = width;
+	g_d3d.sceneHeight = height;
 
-    const auto generation = ++ResizeDiag::sceneTextureGeneration;
+#if RESIZE_DIAG_ENABLED
+	const auto generation = ++ResizeDiag::sceneTextureGeneration;
 
-    ResizeDiag::Log(
-        "Scene target replaced generation=%llu size=%ux%u texture=%p rtv=%p srv=%p",
-        generation,
-        width, height,
-        static_cast<void*>(g_d3d.sceneTexture.Get()),
-        static_cast<void*>(g_d3d.sceneRTV.Get()),
-        static_cast<void*>(g_d3d.sceneSRV.Get()));
+	ResizeDiag::Log(
+		"Scene target replaced generation=%llu size=%ux%u texture=%p rtv=%p srv=%p",
+		generation,
+		width, height,
+		static_cast<void*>(g_d3d.sceneTexture.Get()),
+		static_cast<void*>(g_d3d.sceneRTV.Get()),
+		static_cast<void*>(g_d3d.sceneSRV.Get()));
+#endif
 
-    return true;
+	return true;
 }
 
 static bool ApplySceneResize()
 {
-    static uint64_t lastObservedRequest = 0;
-    static auto lastRequestChange = std::chrono::steady_clock::now();
-    static auto lastApplyTime = std::chrono::steady_clock::time_point{};
-    static bool hasApplied = false;
+	static uint64_t lastObservedRequest = 0;
+	static auto lastRequestChange = std::chrono::steady_clock::now();
+	static auto lastApplyTime = std::chrono::steady_clock::time_point{};
+	static bool hasApplied = false;
 
-    const uint64_t request =
-        g_sceneResizeRequest.load(std::memory_order_acquire);
+	const uint64_t request =
+		g_sceneResizeRequest.load(std::memory_order_acquire);
 
-    const auto now = std::chrono::steady_clock::now();
+	const auto now = std::chrono::steady_clock::now();
 
-    if (request != lastObservedRequest)
-    {
-        lastObservedRequest = request;
-        lastRequestChange = now;
-    }
+	if (request != lastObservedRequest)
+	{
+		lastObservedRequest = request;
+		lastRequestChange = now;
+	}
 
-    UINT width = 0;
-    UINT height = 0;
-    UnpackSize(request, width, height);
+	UINT width = 0;
+	UINT height = 0;
+	UnpackSize(request, width, height);
 
-    if (width == 0 || height == 0)
-        return true;
+	if (width == 0 || height == 0)
+		return true;
 
-    if (width == g_d3d.sceneWidth &&
-        height == g_d3d.sceneHeight)
-    {
-        return true;
-    }
+	if (width == g_d3d.sceneWidth &&
+		height == g_d3d.sceneHeight)
+	{
+		return true;
+	}
 
-    constexpr auto updateInterval = std::chrono::milliseconds(50);
-    constexpr auto settleDelay = std::chrono::milliseconds(120);
+	constexpr auto updateInterval = std::chrono::milliseconds(50);
+	constexpr auto settleDelay = std::chrono::milliseconds(120);
 
-    const bool settled = now - lastRequestChange >= settleDelay;
-    const bool intervalElapsed =
-        !hasApplied || now - lastApplyTime >= updateInterval;
+	const bool settled = now - lastRequestChange >= settleDelay;
+	const bool intervalElapsed =
+		!hasApplied || now - lastApplyTime >= updateInterval;
 
-    if (!settled && !intervalElapsed)
-        return true;
+	if (!settled && !intervalElapsed)
+		return true;
 
-    if (!ResizeSceneTexture(width, height))
-        return false;
+	if (!ResizeSceneTexture(width, height))
+		return false;
 
-    lastApplyTime = now;
-    hasApplied = true;
-    return true;
+	lastApplyTime = now;
+	hasApplied = true;
+	return true;
 }
 
 // -----------------------------------------------------------------------------
 // Main swap-chain resize
 // -----------------------------------------------------------------------------
 
-static bool ApplyMainResize()
+bool ApplyMainResize()
 {
-    static bool hasResizeAttempt = false;
-    static auto lastResizeAttempt = std::chrono::steady_clock::time_point{};
+	static bool hasResizeAttempt = false;
+	static auto lastResizeAttempt =
+		std::chrono::steady_clock::time_point{};
 
-    UINT width = 0;
-    UINT height = 0;
+	UINT width = 0;
+	UINT height = 0;
 
-    UnpackSize(
-        g_mainResizeRequest.load(std::memory_order_acquire),
-        width, height);
+	const uint64_t requestedSize =
+		g_mainResizeRequest.load(std::memory_order_acquire);
 
-    if (width == 0 || height == 0)
-        return true;
+	UnpackSize(requestedSize, width, height);
 
-    const bool forceResize =
-        g_forceMainResize.exchange(false, std::memory_order_acq_rel);
+	if (width == 0 || height == 0)
+		return true;
 
-    if (width == g_d3d.backBufferWidth &&
-        height == g_d3d.backBufferHeight)
-    {
-        return true;
-    }
+	const bool forceResize =
+		g_forceMainResize.exchange(false, std::memory_order_acq_rel);
 
-    const auto now = std::chrono::steady_clock::now();
-    const bool interactive =
-        g_interactiveResize.load(std::memory_order_acquire);
+	if (width == g_d3d.backBufferWidth &&
+		height == g_d3d.backBufferHeight)
+	{
+#if RESIZE_DIAG_ENABLED
+		// No ResizeBuffers call is needed; this requested size is already applied.
+		ResizeDiag::mainResizeAppliedSize.store(
+			PackSize(width, height),
+			std::memory_order_release);
+#endif
+		return true;
+	}
 
-    constexpr auto throttleInterval = std::chrono::milliseconds(50);
-    if (interactive &&
-        !forceResize &&
-        hasResizeAttempt &&
-        now - lastResizeAttempt < throttleInterval)
-    {
-        return true;
-    }
+	const auto now = std::chrono::steady_clock::now();
+	const bool interactive =
+		g_interactiveResize.load(std::memory_order_acquire);
 
-    hasResizeAttempt = true;
-    lastResizeAttempt = now;
+	constexpr auto throttleInterval = std::chrono::milliseconds(50);
 
-    g_d3d.context->OMSetRenderTargets(0, nullptr, nullptr);
-    g_d3d.backBufferRTV.Reset();
+	if (interactive &&
+		!forceResize &&
+		hasResizeAttempt &&
+		now - lastResizeAttempt < throttleInterval)
+	{
+		return true;
+	}
 
-    const auto resizeNumber = ++ResizeDiag::resizeBuffersCount;
-    ResizeDiag::Log("ResizeBuffers #%llu begin size=%ux%u",
-        resizeNumber, width, height);
+	hasResizeAttempt = true;
+	lastResizeAttempt = now;
 
-    const HRESULT resizeHr = g_d3d.swapChain->ResizeBuffers(
-        0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+	g_d3d.context->OMSetRenderTargets(0, nullptr, nullptr);
+	g_d3d.backBufferRTV.Reset();
 
-    ResizeDiag::Log("ResizeBuffers #%llu end hr=0x%08X",
-        resizeNumber,
-        static_cast<unsigned int>(resizeHr));
+#if RESIZE_DIAG_ENABLED
+	const auto resizeNumber = ++ResizeDiag::resizeBuffersCount;
 
-    if (FAILED(resizeHr))
-    {
-        LogHr("ResizeBuffers(main)", resizeHr);
-        return false;
-    }
+	ResizeDiag::Log(
+		"ResizeBuffers #%llu begin size=%ux%u",
+		resizeNumber,
+		width,
+		height);
 
-    return CreateBackBufferRTV();
+	// Capture the session before the call. If a resize session starts or ends
+	// while ResizeBuffers is in progress, this call won't be misattributed.
+	const uint64_t diagSession =
+		ResizeDiag::ActiveMeasurementSession();
+
+	const auto resizeStart = std::chrono::steady_clock::now();
+#endif
+
+	const HRESULT resizeHr = g_d3d.swapChain->ResizeBuffers(
+		0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+
+#if RESIZE_DIAG_ENABLED
+	const auto resizeEnd = std::chrono::steady_clock::now();
+
+	const auto resizeUs =
+		static_cast<unsigned long long>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				resizeEnd - resizeStart).count());
+
+	ResizeDiag::RecordResizeBuffersTiming(
+		diagSession,
+		SUCCEEDED(resizeHr),
+		resizeUs);
+
+	ResizeDiag::Log(
+		"ResizeBuffers #%llu end hr=0x%08X duration=%llu us",
+		resizeNumber,
+		static_cast<unsigned int>(resizeHr),
+		resizeUs);
+#endif
+
+	if (FAILED(resizeHr))
+	{
+		LogHr("ResizeBuffers(main)", resizeHr);
+		return false;
+	}
+
+	if (!CreateBackBufferRTV())
+		return false;
+
+#if RESIZE_DIAG_ENABLED
+	// Acknowledge the size only after ResizeBuffers and RTV creation succeeded.
+	ResizeDiag::mainResizeAppliedSize.store(
+		PackSize(width, height),
+		std::memory_order_release);
+#endif
+
+	return true;
 }
-
 
 // -----------------------------------------------------------------------------
 // Scene rendering: called on the render thread before ImGui::NewFrame.
@@ -707,84 +1058,84 @@ static bool ApplyMainResize()
 
 static void RenderScene(const SceneSnapshot& snapshot)
 {
-    if (!g_d3d.sceneRTV ||
-        !g_d3d.sceneRasterizerState ||
-        !g_d3d.sceneConstantBuffer)
-    {
-        return;
-    }
+	if (!g_d3d.sceneRTV ||
+		!g_d3d.sceneRasterizerState ||
+		!g_d3d.sceneConstantBuffer)
+	{
+		return;
+	}
 
-    auto* context = g_d3d.context.Get();
+	auto* context = g_d3d.context.Get();
 
-    D3D11_VIEWPORT viewport{};
-    viewport.Width = static_cast<float>(g_d3d.sceneWidth);
-    viewport.Height = static_cast<float>(g_d3d.sceneHeight);
-    viewport.MinDepth = 0.0f;
-    viewport.MaxDepth = 1.0f;
+	D3D11_VIEWPORT viewport{};
+	viewport.Width = static_cast<float>(g_d3d.sceneWidth);
+	viewport.Height = static_cast<float>(g_d3d.sceneHeight);
+	viewport.MinDepth = 0.0f;
+	viewport.MaxDepth = 1.0f;
 
-    const float clearColor[] = { 0.075f, 0.085f, 0.11f, 1.0f };
+	const float clearColor[] = { 0.075f, 0.085f, 0.11f, 1.0f };
 
-    ID3D11ShaderResourceView* nullSRV = nullptr;
-    context->PSSetShaderResources(0, 1, &nullSRV);
+	ID3D11ShaderResourceView* nullSRV = nullptr;
+	context->PSSetShaderResources(0, 1, &nullSRV);
 
-    context->OMSetRenderTargets(
-        1, g_d3d.sceneRTV.GetAddressOf(), nullptr);
-    context->RSSetViewports(1, &viewport);
+	context->OMSetRenderTargets(
+		1, g_d3d.sceneRTV.GetAddressOf(), nullptr);
+	context->RSSetViewports(1, &viewport);
 
-    // Establish scene state explicitly instead of inheriting UI state.
-    context->RSSetState(g_d3d.sceneRasterizerState.Get());
-    context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
-    context->OMSetDepthStencilState(nullptr, 0);
+	// Establish scene state explicitly instead of inheriting UI state.
+	context->RSSetState(g_d3d.sceneRasterizerState.Get());
+	context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+	context->OMSetDepthStencilState(nullptr, 0);
 
-    context->ClearRenderTargetView(
-        g_d3d.sceneRTV.Get(), clearColor);
+	context->ClearRenderTargetView(
+		g_d3d.sceneRTV.Get(), clearColor);
 
-    struct SceneConstants
-    {
-        float angle;
-        float padding[3];
-    };
+	struct SceneConstants
+	{
+		float angle;
+		float padding[3];
+	};
 
-    static_assert(sizeof(SceneConstants) == 16);
+	static_assert(sizeof(SceneConstants) == 16);
 
-    D3D11_MAPPED_SUBRESOURCE mapped{};
-    const HRESULT mapHr = context->Map(
-        g_d3d.sceneConstantBuffer.Get(),
-        0,
-        D3D11_MAP_WRITE_DISCARD,
-        0,
-        &mapped);
+	D3D11_MAPPED_SUBRESOURCE mapped{};
+	const HRESULT mapHr = context->Map(
+		g_d3d.sceneConstantBuffer.Get(),
+		0,
+		D3D11_MAP_WRITE_DISCARD,
+		0,
+		&mapped);
 
-    if (SUCCEEDED(mapHr))
-    {
-        auto* constants =
-            static_cast<SceneConstants*>(mapped.pData);
+	if (SUCCEEDED(mapHr))
+	{
+		auto* constants =
+			static_cast<SceneConstants*>(mapped.pData);
 
-        constants->angle = snapshot.angle;
-        constants->padding[0] = 0.0f;
-        constants->padding[1] = 0.0f;
-        constants->padding[2] = 0.0f;
+		constants->angle = snapshot.angle;
+		constants->padding[0] = 0.0f;
+		constants->padding[1] = 0.0f;
+		constants->padding[2] = 0.0f;
 
-        context->Unmap(g_d3d.sceneConstantBuffer.Get(), 0);
+		context->Unmap(g_d3d.sceneConstantBuffer.Get(), 0);
 
-        context->IASetInputLayout(nullptr);
-        context->IASetPrimitiveTopology(
-            D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+		context->IASetInputLayout(nullptr);
+		context->IASetPrimitiveTopology(
+			D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
-        context->VSSetShader(g_d3d.sceneVS.Get(), nullptr, 0);
-        context->VSSetConstantBuffers(
-            0, 1, g_d3d.sceneConstantBuffer.GetAddressOf());
-        context->PSSetShader(g_d3d.scenePS.Get(), nullptr, 0);
+		context->VSSetShader(g_d3d.sceneVS.Get(), nullptr, 0);
+		context->VSSetConstantBuffers(
+			0, 1, g_d3d.sceneConstantBuffer.GetAddressOf());
+		context->PSSetShader(g_d3d.scenePS.Get(), nullptr, 0);
 
-        context->Draw(3, 0);
-    }
-    else
-    {
-        LogHr("Map(scene constant buffer)", mapHr);
-    }
+		context->Draw(3, 0);
+	}
+	else
+	{
+		LogHr("Map(scene constant buffer)", mapHr);
+	}
 
-    // ImGui samples the scene SRV after this function returns.
-    context->OMSetRenderTargets(0, nullptr, nullptr);
+	// ImGui samples the scene SRV after this function returns.
+	context->OMSetRenderTargets(0, nullptr, nullptr);
 }
 
 // -----------------------------------------------------------------------------
@@ -794,185 +1145,185 @@ static void RenderScene(const SceneSnapshot& snapshot)
 
 static ImGuiKey KeyFromVirtualKey(WPARAM vk)
 {
-    if (vk >= 'A' && vk <= 'Z')
-        return static_cast<ImGuiKey>(ImGuiKey_A + (vk - 'A'));
+	if (vk >= 'A' && vk <= 'Z')
+		return static_cast<ImGuiKey>(ImGuiKey_A + (vk - 'A'));
 
-    if (vk >= '0' && vk <= '9')
-        return static_cast<ImGuiKey>(ImGuiKey_0 + (vk - '0'));
+	if (vk >= '0' && vk <= '9')
+		return static_cast<ImGuiKey>(ImGuiKey_0 + (vk - '0'));
 
-    if (vk >= VK_F1 && vk <= VK_F12)
-        return static_cast<ImGuiKey>(ImGuiKey_F1 + (vk - VK_F1));
+	if (vk >= VK_F1 && vk <= VK_F12)
+		return static_cast<ImGuiKey>(ImGuiKey_F1 + (vk - VK_F1));
 
-    switch (vk)
-    {
-    case VK_TAB: return ImGuiKey_Tab;
-    case VK_LEFT: return ImGuiKey_LeftArrow;
-    case VK_RIGHT: return ImGuiKey_RightArrow;
-    case VK_UP: return ImGuiKey_UpArrow;
-    case VK_DOWN: return ImGuiKey_DownArrow;
-    case VK_PRIOR: return ImGuiKey_PageUp;
-    case VK_NEXT: return ImGuiKey_PageDown;
-    case VK_HOME: return ImGuiKey_Home;
-    case VK_END: return ImGuiKey_End;
-    case VK_INSERT: return ImGuiKey_Insert;
-    case VK_DELETE: return ImGuiKey_Delete;
-    case VK_BACK: return ImGuiKey_Backspace;
-    case VK_SPACE: return ImGuiKey_Space;
-    case VK_RETURN: return ImGuiKey_Enter;
-    case VK_ESCAPE: return ImGuiKey_Escape;
-    case VK_OEM_7: return ImGuiKey_Apostrophe;
-    case VK_OEM_COMMA: return ImGuiKey_Comma;
-    case VK_OEM_MINUS: return ImGuiKey_Minus;
-    case VK_OEM_PERIOD: return ImGuiKey_Period;
-    case VK_OEM_2: return ImGuiKey_Slash;
-    case VK_OEM_1: return ImGuiKey_Semicolon;
-    case VK_OEM_PLUS: return ImGuiKey_Equal;
-    case VK_OEM_4: return ImGuiKey_LeftBracket;
-    case VK_OEM_5: return ImGuiKey_Backslash;
-    case VK_OEM_6: return ImGuiKey_RightBracket;
-    case VK_OEM_3: return ImGuiKey_GraveAccent;
-    case VK_CAPITAL: return ImGuiKey_CapsLock;
-    case VK_SCROLL: return ImGuiKey_ScrollLock;
-    case VK_NUMLOCK: return ImGuiKey_NumLock;
-    case VK_SNAPSHOT: return ImGuiKey_PrintScreen;
-    case VK_PAUSE: return ImGuiKey_Pause;
-    case VK_NUMPAD0: return ImGuiKey_Keypad0;
-    case VK_NUMPAD1: return ImGuiKey_Keypad1;
-    case VK_NUMPAD2: return ImGuiKey_Keypad2;
-    case VK_NUMPAD3: return ImGuiKey_Keypad3;
-    case VK_NUMPAD4: return ImGuiKey_Keypad4;
-    case VK_NUMPAD5: return ImGuiKey_Keypad5;
-    case VK_NUMPAD6: return ImGuiKey_Keypad6;
-    case VK_NUMPAD7: return ImGuiKey_Keypad7;
-    case VK_NUMPAD8: return ImGuiKey_Keypad8;
-    case VK_NUMPAD9: return ImGuiKey_Keypad9;
-    case VK_DECIMAL: return ImGuiKey_KeypadDecimal;
-    case VK_DIVIDE: return ImGuiKey_KeypadDivide;
-    case VK_MULTIPLY: return ImGuiKey_KeypadMultiply;
-    case VK_SUBTRACT: return ImGuiKey_KeypadSubtract;
-    case VK_ADD: return ImGuiKey_KeypadAdd;
-    case VK_LSHIFT: return ImGuiKey_LeftShift;
-    case VK_RSHIFT: return ImGuiKey_RightShift;
-    case VK_LCONTROL: return ImGuiKey_LeftCtrl;
-    case VK_RCONTROL: return ImGuiKey_RightCtrl;
-    case VK_LMENU: return ImGuiKey_LeftAlt;
-    case VK_RMENU: return ImGuiKey_RightAlt;
-    case VK_LWIN: return ImGuiKey_LeftSuper;
-    case VK_RWIN: return ImGuiKey_RightSuper;
-    default: return ImGuiKey_None;
-    }
+	switch (vk)
+	{
+	case VK_TAB: return ImGuiKey_Tab;
+	case VK_LEFT: return ImGuiKey_LeftArrow;
+	case VK_RIGHT: return ImGuiKey_RightArrow;
+	case VK_UP: return ImGuiKey_UpArrow;
+	case VK_DOWN: return ImGuiKey_DownArrow;
+	case VK_PRIOR: return ImGuiKey_PageUp;
+	case VK_NEXT: return ImGuiKey_PageDown;
+	case VK_HOME: return ImGuiKey_Home;
+	case VK_END: return ImGuiKey_End;
+	case VK_INSERT: return ImGuiKey_Insert;
+	case VK_DELETE: return ImGuiKey_Delete;
+	case VK_BACK: return ImGuiKey_Backspace;
+	case VK_SPACE: return ImGuiKey_Space;
+	case VK_RETURN: return ImGuiKey_Enter;
+	case VK_ESCAPE: return ImGuiKey_Escape;
+	case VK_OEM_7: return ImGuiKey_Apostrophe;
+	case VK_OEM_COMMA: return ImGuiKey_Comma;
+	case VK_OEM_MINUS: return ImGuiKey_Minus;
+	case VK_OEM_PERIOD: return ImGuiKey_Period;
+	case VK_OEM_2: return ImGuiKey_Slash;
+	case VK_OEM_1: return ImGuiKey_Semicolon;
+	case VK_OEM_PLUS: return ImGuiKey_Equal;
+	case VK_OEM_4: return ImGuiKey_LeftBracket;
+	case VK_OEM_5: return ImGuiKey_Backslash;
+	case VK_OEM_6: return ImGuiKey_RightBracket;
+	case VK_OEM_3: return ImGuiKey_GraveAccent;
+	case VK_CAPITAL: return ImGuiKey_CapsLock;
+	case VK_SCROLL: return ImGuiKey_ScrollLock;
+	case VK_NUMLOCK: return ImGuiKey_NumLock;
+	case VK_SNAPSHOT: return ImGuiKey_PrintScreen;
+	case VK_PAUSE: return ImGuiKey_Pause;
+	case VK_NUMPAD0: return ImGuiKey_Keypad0;
+	case VK_NUMPAD1: return ImGuiKey_Keypad1;
+	case VK_NUMPAD2: return ImGuiKey_Keypad2;
+	case VK_NUMPAD3: return ImGuiKey_Keypad3;
+	case VK_NUMPAD4: return ImGuiKey_Keypad4;
+	case VK_NUMPAD5: return ImGuiKey_Keypad5;
+	case VK_NUMPAD6: return ImGuiKey_Keypad6;
+	case VK_NUMPAD7: return ImGuiKey_Keypad7;
+	case VK_NUMPAD8: return ImGuiKey_Keypad8;
+	case VK_NUMPAD9: return ImGuiKey_Keypad9;
+	case VK_DECIMAL: return ImGuiKey_KeypadDecimal;
+	case VK_DIVIDE: return ImGuiKey_KeypadDivide;
+	case VK_MULTIPLY: return ImGuiKey_KeypadMultiply;
+	case VK_SUBTRACT: return ImGuiKey_KeypadSubtract;
+	case VK_ADD: return ImGuiKey_KeypadAdd;
+	case VK_LSHIFT: return ImGuiKey_LeftShift;
+	case VK_RSHIFT: return ImGuiKey_RightShift;
+	case VK_LCONTROL: return ImGuiKey_LeftCtrl;
+	case VK_RCONTROL: return ImGuiKey_RightCtrl;
+	case VK_LMENU: return ImGuiKey_LeftAlt;
+	case VK_RMENU: return ImGuiKey_RightAlt;
+	case VK_LWIN: return ImGuiKey_LeftSuper;
+	case VK_RWIN: return ImGuiKey_RightSuper;
+	default: return ImGuiKey_None;
+	}
 }
 
 static void ProcessQueuedImGuiInput(ImGuiIO& io)
 {
-    std::deque<InputEvent> events;
-    {
-        std::lock_guard lock(g_inputMutex);
-        events.swap(g_inputQueue);
-    }
+	std::deque<InputEvent> events;
+	{
+		std::lock_guard lock(g_inputMutex);
+		events.swap(g_inputQueue);
+	}
 
-    for (const InputEvent& event : events)
-    {
-        switch (event.message)
-        {
-        case WM_MOUSEMOVE:
-            io.AddMousePosEvent(
-                static_cast<float>(GET_X_LPARAM(event.lParam)),
-                static_cast<float>(GET_Y_LPARAM(event.lParam)));
-            break;
+	for (const InputEvent& event : events)
+	{
+		switch (event.message)
+		{
+		case WM_MOUSEMOVE:
+			io.AddMousePosEvent(
+				static_cast<float>(GET_X_LPARAM(event.lParam)),
+				static_cast<float>(GET_Y_LPARAM(event.lParam)));
+			break;
 
-        case WM_LBUTTONDOWN:
-        case WM_LBUTTONUP:
-            io.AddMouseButtonEvent(
-                0, event.message == WM_LBUTTONDOWN);
-            break;
+		case WM_LBUTTONDOWN:
+		case WM_LBUTTONUP:
+			io.AddMouseButtonEvent(
+				0, event.message == WM_LBUTTONDOWN);
+			break;
 
-        case WM_RBUTTONDOWN:
-        case WM_RBUTTONUP:
-            io.AddMouseButtonEvent(
-                1, event.message == WM_RBUTTONDOWN);
-            break;
+		case WM_RBUTTONDOWN:
+		case WM_RBUTTONUP:
+			io.AddMouseButtonEvent(
+				1, event.message == WM_RBUTTONDOWN);
+			break;
 
-        case WM_MBUTTONDOWN:
-        case WM_MBUTTONUP:
-            io.AddMouseButtonEvent(
-                2, event.message == WM_MBUTTONDOWN);
-            break;
+		case WM_MBUTTONDOWN:
+		case WM_MBUTTONUP:
+			io.AddMouseButtonEvent(
+				2, event.message == WM_MBUTTONDOWN);
+			break;
 
-        case WM_XBUTTONDOWN:
-        case WM_XBUTTONUP:
-        {
-            const int button =
-                GET_XBUTTON_WPARAM(event.wParam) == XBUTTON1 ? 3 : 4;
-            io.AddMouseButtonEvent(
-                button, event.message == WM_XBUTTONDOWN);
-            break;
-        }
+		case WM_XBUTTONDOWN:
+		case WM_XBUTTONUP:
+		{
+			const int button =
+				GET_XBUTTON_WPARAM(event.wParam) == XBUTTON1 ? 3 : 4;
+			io.AddMouseButtonEvent(
+				button, event.message == WM_XBUTTONDOWN);
+			break;
+		}
 
-        case WM_MOUSEWHEEL:
-            io.AddMouseWheelEvent(
-                0.0f,
-                static_cast<float>(
-                    GET_WHEEL_DELTA_WPARAM(event.wParam)) /
-                static_cast<float>(WHEEL_DELTA));
-            break;
+		case WM_MOUSEWHEEL:
+			io.AddMouseWheelEvent(
+				0.0f,
+				static_cast<float>(
+					GET_WHEEL_DELTA_WPARAM(event.wParam)) /
+				static_cast<float>(WHEEL_DELTA));
+			break;
 
-        case WM_MOUSEHWHEEL:
-            io.AddMouseWheelEvent(
-                static_cast<float>(
-                    GET_WHEEL_DELTA_WPARAM(event.wParam)) /
-                static_cast<float>(WHEEL_DELTA),
-                0.0f);
-            break;
+		case WM_MOUSEHWHEEL:
+			io.AddMouseWheelEvent(
+				static_cast<float>(
+					GET_WHEEL_DELTA_WPARAM(event.wParam)) /
+				static_cast<float>(WHEEL_DELTA),
+				0.0f);
+			break;
 
-        case WM_KEYDOWN:
-        case WM_SYSKEYDOWN:
-        case WM_KEYUP:
-        case WM_SYSKEYUP:
-        {
-            const bool down =
-                event.message == WM_KEYDOWN ||
-                event.message == WM_SYSKEYDOWN;
+		case WM_KEYDOWN:
+		case WM_SYSKEYDOWN:
+		case WM_KEYUP:
+		case WM_SYSKEYUP:
+		{
+			const bool down =
+				event.message == WM_KEYDOWN ||
+				event.message == WM_SYSKEYDOWN;
 
-            const ImGuiKey key = KeyFromVirtualKey(event.wParam);
-            if (key != ImGuiKey_None)
-                io.AddKeyEvent(key, down);
+			const ImGuiKey key = KeyFromVirtualKey(event.wParam);
+			if (key != ImGuiKey_None)
+				io.AddKeyEvent(key, down);
 
-            io.AddKeyEvent(ImGuiMod_Ctrl, event.ctrl);
-            io.AddKeyEvent(ImGuiMod_Shift, event.shift);
-            io.AddKeyEvent(ImGuiMod_Alt, event.alt);
-            break;
-        }
+			io.AddKeyEvent(ImGuiMod_Ctrl, event.ctrl);
+			io.AddKeyEvent(ImGuiMod_Shift, event.shift);
+			io.AddKeyEvent(ImGuiMod_Alt, event.alt);
+			break;
+		}
 
-        case WM_CHAR:
-            io.AddInputCharacterUTF16(
-                static_cast<unsigned short>(event.wParam));
-            break;
+		case WM_CHAR:
+			io.AddInputCharacterUTF16(
+				static_cast<unsigned short>(event.wParam));
+			break;
 
-        case WM_SETFOCUS:
-            io.AddFocusEvent(true);
-            break;
+		case WM_SETFOCUS:
+			io.AddFocusEvent(true);
+			break;
 
-        case WM_KILLFOCUS:
-            //io.AddFocusEvent(false);
-            //break;
-        {
-            HWND nextWindow = reinterpret_cast<HWND>(event.wParam);
-            DWORD nextProcessId = 0;
+		case WM_KILLFOCUS:
+			//io.AddFocusEvent(false);
+			//break;
+		{
+			HWND nextWindow = reinterpret_cast<HWND>(event.wParam);
+			DWORD nextProcessId = 0;
 
-            if (nextWindow)
-                GetWindowThreadProcessId(nextWindow, &nextProcessId);
+			if (nextWindow)
+				GetWindowThreadProcessId(nextWindow, &nextProcessId);
 
-            // Don't report app-wide focus loss when focus is moving to another
-            // window belonging to this application, such as a detached ImGui viewport.
-            if (!nextWindow || nextProcessId != GetCurrentProcessId())
-                io.AddFocusEvent(false);
+			// Don't report app-wide focus loss when focus is moving to another
+			// window belonging to this application, such as a detached ImGui viewport.
+			if (!nextWindow || nextProcessId != GetCurrentProcessId())
+				io.AddFocusEvent(false);
 
-            break;
-        }
+			break;
+		}
 
-        } // switch
-    }
+		} // switch
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -981,200 +1332,202 @@ static void ProcessQueuedImGuiInput(ImGuiIO& io)
 
 static void DrawSceneWindow()
 {
-    if (!ImGui::Begin("Scene"))
-    {
-        ImGui::End();
-        return;
-    }
+	if (!ImGui::Begin("Scene"))
+	{
+		ImGui::End();
+		return;
+	}
 
-    const ImVec2 available = ImGui::GetContentRegionAvail();
+	const ImVec2 available = ImGui::GetContentRegionAvail();
 
-    if (available.x > 1.0f && available.y > 1.0f)
-    {
-        const UINT width = std::max<UINT>(
-            1, static_cast<UINT>(std::lround(available.x)));
-        const UINT height = std::max<UINT>(
-            1, static_cast<UINT>(std::lround(available.y)));
+	if (available.x > 1.0f && available.y > 1.0f)
+	{
+		const UINT width = std::max<UINT>(
+			1, static_cast<UINT>(std::lround(available.x)));
+		const UINT height = std::max<UINT>(
+			1, static_cast<UINT>(std::lround(available.y)));
 
-        // The renderer applies this request on its next frame.
-        g_sceneResizeRequest.store(
-            PackSize(width, height),
-            std::memory_order_release);
+		// The renderer applies this request on its next frame.
+		g_sceneResizeRequest.store(
+			PackSize(width, height),
+			std::memory_order_release);
 
-        static UINT lastLoggedWidth = 0;
-        static UINT lastLoggedHeight = 0;
-        static ULONGLONG lastLogTime = 0;
+#if RESIZE_DIAG_ENABLED
+		static UINT lastLoggedWidth = 0;
+		static UINT lastLoggedHeight = 0;
+		static ULONGLONG lastLogTime = 0;
 
-        const ULONGLONG now = GetTickCount64();
+		const ULONGLONG now = GetTickCount64();
 
-        if (width != lastLoggedWidth ||
-            height != lastLoggedHeight ||
-            now - lastLogTime >= 250)
-        {
-            lastLoggedWidth = width;
-            lastLoggedHeight = height;
-            lastLogTime = now;
+		if (width != lastLoggedWidth ||
+			height != lastLoggedHeight ||
+			now - lastLogTime >= 250)
+		{
+			lastLoggedWidth = width;
+			lastLoggedHeight = height;
+			lastLogTime = now;
 
-            ResizeDiag::Log(
-                "Scene image request=%ux%u display=%.1fx%.1f texture=%ux%u generation=%llu",
-                width, height,
-                available.x, available.y,
-                g_d3d.sceneWidth, g_d3d.sceneHeight,
-                ResizeDiag::sceneTextureGeneration);
-        }
+			ResizeDiag::Log(
+				"Scene image request=%ux%u display=%.1fx%.1f texture=%ux%u generation=%llu",
+				width, height,
+				available.x, available.y,
+				g_d3d.sceneWidth, g_d3d.sceneHeight,
+				ResizeDiag::sceneTextureGeneration);
+		}
+#endif
 
-        if (g_d3d.sceneSRV)
-        {
-            const ImTextureID textureId =
-                (ImTextureID)(intptr_t)g_d3d.sceneSRV.Get();
+		if (g_d3d.sceneSRV)
+		{
+			const ImTextureID textureId =
+				(ImTextureID)(intptr_t)g_d3d.sceneSRV.Get();
 
-            ImGui::Image(textureId, available);
-        }
-        else
-        {
-            ImGui::TextUnformatted("Scene texture not ready");
-        }
-    }
+			ImGui::Image(textureId, available);
+		}
+		else
+		{
+			ImGui::TextUnformatted("Scene texture not ready");
+		}
+	}
 
-    ImGui::End();
+	ImGui::End();
 }
 
 static void DrawInspectorWindow(
-    const std::shared_ptr<const SceneSnapshot>& snapshot)
+	const std::shared_ptr<const SceneSnapshot>& snapshot)
 {
-    if (!ImGui::Begin("Inspector"))
-    {
-        ImGui::End();
-        return;
-    }
+	if (!ImGui::Begin("Inspector"))
+	{
+		ImGui::End();
+		return;
+	}
 
-    ImGui::TextUnformatted("Scene snapshot");
-    ImGui::Separator();
+	ImGui::TextUnformatted("Scene snapshot");
+	ImGui::Separator();
 
-    if (snapshot)
-        ImGui::Text("Angle: %.3f", snapshot->angle);
-    else
-        ImGui::TextUnformatted("No snapshot");
+	if (snapshot)
+		ImGui::Text("Angle: %.3f", snapshot->angle);
+	else
+		ImGui::TextUnformatted("No snapshot");
 
-    ImGui::End();
+	ImGui::End();
 }
 
 static void BuildInitialDockLayout(
-    ImGuiID dockId,
-    const ImVec2& dockSize)
+	ImGuiID dockId,
+	const ImVec2& dockSize)
 {
-    ImGui::DockBuilderRemoveNode(dockId);
-    ImGui::DockBuilderAddNode(
-        dockId, ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(dockId, dockSize);
+	ImGui::DockBuilderRemoveNode(dockId);
+	ImGui::DockBuilderAddNode(
+		dockId, ImGuiDockNodeFlags_DockSpace);
+	ImGui::DockBuilderSetNodeSize(dockId, dockSize);
 
-    ImGuiID sceneId = 0;
-    ImGuiID inspectorId = 0;
+	ImGuiID sceneId = 0;
+	ImGuiID inspectorId = 0;
 
-    ImGui::DockBuilderSplitNode(
-        dockId,
-        ImGuiDir_Left,
-        0.72f,
-        &sceneId,
-        &inspectorId);
+	ImGui::DockBuilderSplitNode(
+		dockId,
+		ImGuiDir_Left,
+		0.72f,
+		&sceneId,
+		&inspectorId);
 
-    ImGui::DockBuilderDockWindow("Scene", sceneId);
-    ImGui::DockBuilderDockWindow("Inspector", inspectorId);
-    ImGui::DockBuilderFinish(dockId);
+	ImGui::DockBuilderDockWindow("Scene", sceneId);
+	ImGui::DockBuilderDockWindow("Inspector", inspectorId);
+	ImGui::DockBuilderFinish(dockId);
 }
 
 static void DrawMainImGui(
-    const std::shared_ptr<const SceneSnapshot>& snapshot)
+	const std::shared_ptr<const SceneSnapshot>& snapshot)
 {
-    ImGuiViewport* viewport = ImGui::GetMainViewport();
+	ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-    const float titleHeight = 36.0f * DpiScale(g_hwnd);
-    const float buttonWidth = 48.0f * DpiScale(g_hwnd);
+	const float titleHeight = 36.0f * DpiScale(g_hwnd);
+	const float buttonWidth = 48.0f * DpiScale(g_hwnd);
 
-    ImGui::SetNextWindowPos(viewport->Pos);
-    ImGui::SetNextWindowSize(viewport->Size);
-    ImGui::SetNextWindowViewport(viewport->ID);
+	ImGui::SetNextWindowPos(viewport->Pos);
+	ImGui::SetNextWindowSize(viewport->Size);
+	ImGui::SetNextWindowViewport(viewport->ID);
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 
-    constexpr ImGuiWindowFlags hostFlags =
-        ImGuiWindowFlags_NoTitleBar |
-        ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoBringToFrontOnFocus |
-        ImGuiWindowFlags_NoNavFocus |
-        ImGuiWindowFlags_NoDocking;
+	constexpr ImGuiWindowFlags hostFlags =
+		ImGuiWindowFlags_NoTitleBar |
+		ImGuiWindowFlags_NoCollapse |
+		ImGuiWindowFlags_NoResize |
+		ImGuiWindowFlags_NoMove |
+		ImGuiWindowFlags_NoBringToFrontOnFocus |
+		ImGuiWindowFlags_NoNavFocus |
+		ImGuiWindowFlags_NoDocking;
 
-    ImGui::Begin("##MainDockHost", nullptr, hostFlags);
+	ImGui::Begin("##MainDockHost", nullptr, hostFlags);
 
-    const ImVec2 hostPos = ImGui::GetWindowPos();
-    const ImVec2 hostSize = ImGui::GetWindowSize();
+	const ImVec2 hostPos = ImGui::GetWindowPos();
+	const ImVec2 hostSize = ImGui::GetWindowSize();
 
-    ImDrawList* drawList = ImGui::GetWindowDrawList();
-    drawList->AddRectFilled(
-        hostPos,
-        ImVec2(hostPos.x + hostSize.x, hostPos.y + titleHeight),
-        IM_COL32(32, 35, 43, 255));
+	ImDrawList* drawList = ImGui::GetWindowDrawList();
+	drawList->AddRectFilled(
+		hostPos,
+		ImVec2(hostPos.x + hostSize.x, hostPos.y + titleHeight),
+		IM_COL32(32, 35, 43, 255));
 
-    ImGui::SetCursorPos(ImVec2(12.0f * DpiScale(g_hwnd), 0));
-    ImGui::SetCursorPosY(
-        (titleHeight - ImGui::GetTextLineHeight()) * 0.5f);
-    ImGui::TextUnformatted("DX11 Scene Editor");
+	ImGui::SetCursorPos(ImVec2(12.0f * DpiScale(g_hwnd), 0));
+	ImGui::SetCursorPosY(
+		(titleHeight - ImGui::GetTextLineHeight()) * 0.5f);
+	ImGui::TextUnformatted("DX11 Scene Editor");
 
-    // The right side of the native hit-test area is HTCLIENT, so these
-    // ImGui buttons receive clicks instead of starting a title-bar drag.
-    ImGui::SetCursorPos(ImVec2(
-        hostSize.x - 3.0f * buttonWidth,
-        0.0f));
+	// The right side of the native hit-test area is HTCLIENT, so these
+	// ImGui buttons receive clicks instead of starting a title-bar drag.
+	ImGui::SetCursorPos(ImVec2(
+		hostSize.x - 3.0f * buttonWidth,
+		0.0f));
 
-    if (ImGui::Button("—", ImVec2(buttonWidth, titleHeight)))
-        PostMessageW(g_hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+	if (ImGui::Button("—", ImVec2(buttonWidth, titleHeight)))
+		PostMessageW(g_hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
 
-    ImGui::SameLine(0.0f, 0.0f);
+	ImGui::SameLine(0.0f, 0.0f);
 
-    if (ImGui::Button(
-        IsZoomed(g_hwnd) ? "❐" : "□",
-        ImVec2(buttonWidth, titleHeight)))
-    {
-        PostMessageW(
-            g_hwnd,
-            WM_SYSCOMMAND,
-            IsZoomed(g_hwnd) ? SC_RESTORE : SC_MAXIMIZE,
-            0);
-    }
+	if (ImGui::Button(
+		IsZoomed(g_hwnd) ? "❐" : "□",
+		ImVec2(buttonWidth, titleHeight)))
+	{
+		PostMessageW(
+			g_hwnd,
+			WM_SYSCOMMAND,
+			IsZoomed(g_hwnd) ? SC_RESTORE : SC_MAXIMIZE,
+			0);
+	}
 
-    ImGui::SameLine(0.0f, 0.0f);
+	ImGui::SameLine(0.0f, 0.0f);
 
-    if (ImGui::Button("×", ImVec2(buttonWidth, titleHeight)))
-        PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+	if (ImGui::Button("×", ImVec2(buttonWidth, titleHeight)))
+		PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
 
-    const ImGuiID dockId = ImGui::GetID("MainDockspace");
+	const ImGuiID dockId = ImGui::GetID("MainDockspace");
 
-    static bool layoutBuilt = false;
-    if (!layoutBuilt)
-    {
-        BuildInitialDockLayout(
-            dockId,
-            ImVec2(hostSize.x, hostSize.y - titleHeight));
-        layoutBuilt = true;
-    }
+	static bool layoutBuilt = false;
+	if (!layoutBuilt)
+	{
+		BuildInitialDockLayout(
+			dockId,
+			ImVec2(hostSize.x, hostSize.y - titleHeight));
+		layoutBuilt = true;
+	}
 
-    ImGui::SetCursorPos(ImVec2(0.0f, titleHeight));
-    const ImVec2 dockSize = ImGui::GetContentRegionAvail();
+	ImGui::SetCursorPos(ImVec2(0.0f, titleHeight));
+	const ImVec2 dockSize = ImGui::GetContentRegionAvail();
 
-    ImGui::DockSpace(
-        dockId,
-        dockSize,
-        ImGuiDockNodeFlags_None);
+	ImGui::DockSpace(
+		dockId,
+		dockSize,
+		ImGuiDockNodeFlags_None);
 
-    ImGui::End();
-    ImGui::PopStyleVar(3);
+	ImGui::End();
+	ImGui::PopStyleVar(3);
 
-    DrawSceneWindow();
-    DrawInspectorWindow(snapshot);
+	DrawSceneWindow();
+	DrawInspectorWindow(snapshot);
 }
 
 // -----------------------------------------------------------------------------
@@ -1185,19 +1538,19 @@ static void DrawMainImGui(
 
 static void PumpRenderThreadMessages()
 {
-    MSG msg{};
+	MSG msg{};
 
-    while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
-    {
-        if (msg.message == WM_QUIT)
-        {
-            g_running.store(false, std::memory_order_release);
-            continue;
-        }
+	while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+	{
+		if (msg.message == WM_QUIT)
+		{
+			g_running.store(false, std::memory_order_release);
+			continue;
+		}
 
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
+		TranslateMessage(&msg);
+		DispatchMessageW(&msg);
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -1206,161 +1559,258 @@ static void PumpRenderThreadMessages()
 
 void RenderThread()
 {
-    // Create this thread's message queue before ImGui creates platform windows.
-    MSG initialMessage{};
-    PeekMessageW(&initialMessage, nullptr, 0, 0, PM_NOREMOVE);
+	// Create this thread's message queue before ImGui creates platform windows.
+	MSG initialMessage{};
+	PeekMessageW(&initialMessage, nullptr, 0, 0, PM_NOREMOVE);
 
-    if (!CreateD3D(g_hwnd) ||
-        !CreateScenePipeline() ||
-        !ResizeSceneTexture(640, 480))
-    {
-        g_running.store(false, std::memory_order_release);
-        return;
-    }
+	if (!CreateD3D(g_hwnd) ||
+		!CreateScenePipeline() ||
+		!ResizeSceneTexture(640, 480))
+	{
+		g_running.store(false, std::memory_order_release);
+		return;
+	}
 
-    IMGUI_CHECKVERSION();
-    ImGuiContext* imgui = ImGui::CreateContext();
-    ImGui::SetCurrentContext(imgui);
+	IMGUI_CHECKVERSION();
+	ImGuiContext* imgui = ImGui::CreateContext();
+	ImGui::SetCurrentContext(imgui);
 
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-    io.IniFilename = nullptr;
+	ImGuiIO& io = ImGui::GetIO();
+	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+	io.IniFilename = nullptr;
 
-    ImGui::StyleColorsDark();
+	ImGui::StyleColorsDark();
 
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 0.0f;
-    style.WindowBorderSize = 0.0f;
-    style.Colors[ImGuiCol_WindowBg] =
-        ImVec4(0.10f, 0.11f, 0.14f, 1.0f);
+	ImGuiStyle& style = ImGui::GetStyle();
+	style.WindowRounding = 0.0f;
+	style.WindowBorderSize = 0.0f;
+	style.Colors[ImGuiCol_WindowBg] =
+		ImVec4(0.10f, 0.11f, 0.14f, 1.0f);
 
-    if (!ImGui_ImplWin32_Init(g_hwnd))
-    {
-        Log("ImGui_ImplWin32_Init failed");
-        ImGui::DestroyContext(imgui);
-        g_running.store(false, std::memory_order_release);
-        return;
-    }
+	if (!ImGui_ImplWin32_Init(g_hwnd))
+	{
+		Log("ImGui_ImplWin32_Init failed");
+		ImGui::DestroyContext(imgui);
+		g_running.store(false, std::memory_order_release);
+		return;
+	}
 
-    if (!ImGui_ImplDX11_Init(
-        g_d3d.device.Get(),
-        g_d3d.context.Get()))
-    {
-        Log("ImGui_ImplDX11_Init failed");
-        ImGui_ImplWin32_Shutdown();
-        ImGui::DestroyContext(imgui);
-        g_running.store(false, std::memory_order_release);
-        return;
-    }
+	if (!ImGui_ImplDX11_Init(
+		g_d3d.device.Get(),
+		g_d3d.context.Get()))
+	{
+		Log("ImGui_ImplDX11_Init failed");
+		ImGui_ImplWin32_Shutdown();
+		ImGui::DestroyContext(imgui);
+		g_running.store(false, std::memory_order_release);
+		return;
+	}
 
-    while (g_running.load(std::memory_order_acquire))
-    {
-        ImGui::SetCurrentContext(imgui);
-        PumpRenderThreadMessages();
+	const auto elapsedUs =
+		[](const std::chrono::steady_clock::time_point& start,
+			const std::chrono::steady_clock::time_point& end)
+		{
+			return static_cast<unsigned long long>(
+				std::chrono::duration_cast<std::chrono::microseconds>(
+					end - start).count());
+		};
 
-        if (!g_running.load(std::memory_order_acquire))
-            break;
+	while (g_running.load(std::memory_order_acquire))
+	{
+#if RESIZE_DIAG_ENABLED
+		// A frame that began before the resize session won't be measured.
+		const uint64_t diagSession =
+			ResizeDiag::ActiveMeasurementSession();
 
-        if (!ApplyMainResize() || !ApplySceneResize())
-        {
-            g_running.store(false, std::memory_order_release);
-            break;
-        }
+		const auto frameStart = std::chrono::steady_clock::now();
+#endif
 
-        UINT clientWidth = 0;
-        UINT clientHeight = 0;
-        UnpackSize(
-            g_mainResizeRequest.load(std::memory_order_acquire),
-            clientWidth,
-            clientHeight);
+		ImGui::SetCurrentContext(imgui);
+		PumpRenderThreadMessages();
 
-        if (clientWidth == 0 || clientHeight == 0)
-        {
-            Sleep(10);
-            continue;
-        }
+		if (!g_running.load(std::memory_order_acquire))
+			break;
 
-        auto snapshot =
-            g_snapshot.load(std::memory_order_acquire);
+#if RESIZE_DIAG_ENABLED
+		const auto mainResizeStart = std::chrono::steady_clock::now();
+#endif
 
-        RenderScene(*snapshot);
+		if (!ApplyMainResize())
+		{
+			g_running.store(false, std::memory_order_release);
+			break;
+		}
 
-        ProcessQueuedImGuiInput(io);
+#if RESIZE_DIAG_ENABLED
+		const auto mainResizeEnd = std::chrono::steady_clock::now();
+		const auto mainResizeUs =
+			elapsedUs(mainResizeStart, mainResizeEnd);
 
-        ImGui_ImplDX11_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
+		const auto sceneApplyStart = std::chrono::steady_clock::now();
+#endif
 
-        DrawMainImGui(snapshot);
-        ImGui::Render();
+		const bool sceneResizeOk = ApplySceneResize();
 
-        const float clearColor[] = { 0.12f, 0.13f, 0.16f, 1.0f };
+#if RESIZE_DIAG_ENABLED
+		const auto sceneApplyEnd = std::chrono::steady_clock::now();
+		const auto sceneApplyUs =
+			elapsedUs(sceneApplyStart, sceneApplyEnd);
+#endif
 
-        g_d3d.context->OMSetRenderTargets(
-            1, g_d3d.backBufferRTV.GetAddressOf(), nullptr);
+		if (!sceneResizeOk)
+		{
+			g_running.store(false, std::memory_order_release);
+			break;
+		}
 
-        D3D11_VIEWPORT viewport{};
-        viewport.Width = static_cast<float>(g_d3d.backBufferWidth);
-        viewport.Height = static_cast<float>(g_d3d.backBufferHeight);
-        viewport.MinDepth = 0.0f;
-        viewport.MaxDepth = 1.0f;
+		UINT clientWidth = 0;
+		UINT clientHeight = 0;
+		UnpackSize(
+			g_mainResizeRequest.load(std::memory_order_acquire),
+			clientWidth,
+			clientHeight);
 
-        g_d3d.context->RSSetViewports(1, &viewport);
-        g_d3d.context->ClearRenderTargetView(
-            g_d3d.backBufferRTV.Get(), clearColor);
+		if (clientWidth == 0 || clientHeight == 0)
+		{
+			Sleep(10);
+			continue;
+		}
 
-        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+		auto snapshot =
+			g_snapshot.load(std::memory_order_acquire);
 
-        if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-        {
-            ImGui::UpdatePlatformWindows();
-            ImGui::RenderPlatformWindowsDefault();
-        }
+#if RESIZE_DIAG_ENABLED
+		const auto renderSceneStart = std::chrono::steady_clock::now();
+#endif
 
-        //[LOG]
-        const auto presentNumber = ++ResizeDiag::presentCount;
-        //[---]
+		RenderScene(*snapshot);
 
-        const HRESULT presentHr =
-            g_d3d.swapChain->Present(1, 0);
+#if RESIZE_DIAG_ENABLED
+		const auto renderSceneEnd = std::chrono::steady_clock::now();
+		const auto renderSceneUs =
+			elapsedUs(renderSceneStart, renderSceneEnd);
 
-        //if (FAILED(presentHr))
-        //{
-        //    LogHr("Present(main swap chain)", presentHr);
-        //    g_running.store(false, std::memory_order_release);
-        //    break;
-        //}
+		const auto imguiBuildStart = std::chrono::steady_clock::now();
+#endif
 
-        //[LOG]
-        if (FAILED(presentHr))
-        {
-            ++ResizeDiag::presentFailureCount;
-            ResizeDiag::Log("Present #%llu FAILED hr=0x%08X",
-                presentNumber,
-                static_cast<unsigned int>(presentHr));
-        }
-        else if (presentNumber % 120 == 0)
-        {
-            ResizeDiag::Log("Present #%llu succeeded", presentNumber);
-        }
-        //[---]
+		ProcessQueuedImGuiInput(io);
 
-    }
+		ImGui_ImplDX11_NewFrame();
+		ImGui_ImplWin32_NewFrame();
+		ImGui::NewFrame();
 
-    ImGui::SetCurrentContext(imgui);
-    ImGui::DestroyPlatformWindows();
-    ImGui_ImplDX11_Shutdown();
-    ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext(imgui);
+		DrawMainImGui(snapshot);
+		ImGui::Render();
 
-    if (g_d3d.context)
-    {
-        g_d3d.context->ClearState();
-        g_d3d.context->Flush();
-    }
+#if RESIZE_DIAG_ENABLED
+		const auto imguiBuildEnd = std::chrono::steady_clock::now();
+		const auto imguiBuildUs =
+			elapsedUs(imguiBuildStart, imguiBuildEnd);
 
-    g_d3d = D3DState{};
+		const auto mainDrawStart = std::chrono::steady_clock::now();
+#endif
+
+		const float clearColor[] = { 0.12f, 0.13f, 0.16f, 1.0f };
+
+		g_d3d.context->OMSetRenderTargets(
+			1, g_d3d.backBufferRTV.GetAddressOf(), nullptr);
+
+		D3D11_VIEWPORT viewport{};
+		viewport.Width = static_cast<float>(g_d3d.backBufferWidth);
+		viewport.Height = static_cast<float>(g_d3d.backBufferHeight);
+		viewport.MinDepth = 0.0f;
+		viewport.MaxDepth = 1.0f;
+
+		g_d3d.context->RSSetViewports(1, &viewport);
+		g_d3d.context->ClearRenderTargetView(
+			g_d3d.backBufferRTV.Get(), clearColor);
+
+		ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+
+#if RESIZE_DIAG_ENABLED
+		const auto mainDrawEnd = std::chrono::steady_clock::now();
+		const auto mainDrawUs =
+			elapsedUs(mainDrawStart, mainDrawEnd);
+
+		unsigned long long platformWindowsUs = 0;
+#endif
+
+		if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
+		{
+#if RESIZE_DIAG_ENABLED
+			const auto platformWindowsStart =
+				std::chrono::steady_clock::now();
+#endif
+
+			ImGui::UpdatePlatformWindows();
+			ImGui::RenderPlatformWindowsDefault();
+
+#if RESIZE_DIAG_ENABLED
+			const auto platformWindowsEnd =
+				std::chrono::steady_clock::now();
+
+			platformWindowsUs =
+				elapsedUs(platformWindowsStart, platformWindowsEnd);
+#endif
+		}
+
+#if RESIZE_DIAG_ENABLED
+		// Keep this lifetime counter; it is separate from session timings.
+		const auto presentNumber = ++ResizeDiag::presentCount;
+		const auto presentStart = std::chrono::steady_clock::now();
+#endif
+
+		const HRESULT presentHr =
+			g_d3d.swapChain->Present(1, 0);
+
+#if RESIZE_DIAG_ENABLED
+		const auto presentEnd = std::chrono::steady_clock::now();
+		const auto presentUs =
+			elapsedUs(presentStart, presentEnd);
+		const auto frameUs =
+			elapsedUs(frameStart, presentEnd);
+
+		ResizeDiag::RecordFrameTiming(
+			diagSession,
+			frameUs,
+			presentUs,
+			sceneApplyUs,
+			mainResizeUs,
+			renderSceneUs,
+			imguiBuildUs,
+			mainDrawUs,
+			platformWindowsUs,
+			true);
+
+		if (FAILED(presentHr))
+		{
+			++ResizeDiag::presentFailureCount;
+			ResizeDiag::Log(
+				"Present #%llu FAILED hr=0x%08X",
+				presentNumber,
+				static_cast<unsigned int>(presentHr));
+		}
+		else if (presentNumber % 120 == 0)
+		{
+			ResizeDiag::Log("Present #%llu succeeded", presentNumber);
+		}
+#endif
+	}
+
+	ImGui::SetCurrentContext(imgui);
+	ImGui::DestroyPlatformWindows();
+	ImGui_ImplDX11_Shutdown();
+	ImGui_ImplWin32_Shutdown();
+	ImGui::DestroyContext(imgui);
+
+	if (g_d3d.context)
+	{
+		g_d3d.context->ClearState();
+		g_d3d.context->Flush();
+	}
+
+	g_d3d = D3DState{};
 }
 
 // -----------------------------------------------------------------------------
@@ -1369,180 +1819,233 @@ void RenderThread()
 // -----------------------------------------------------------------------------
 
 static LRESULT CALLBACK MainWndProc(
-    HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+	HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
-    switch (message)
-    {
-    case WM_NCCALCSIZE:
-        // Remove the standard non-client frame; custom hit testing below
-        // preserves resizing and dragging.
-        if (wParam)
-            return 0;
-        break;
+#if RESIZE_DIAG_ENABLED
+	constexpr UINT IDT_RESIZE_SUMMARY = 1;
+#endif
+	switch (message)
+	{
+	case WM_NCCALCSIZE:
+		// Remove the standard non-client frame; custom hit testing below
+		// preserves resizing and dragging.
+		if (wParam)
+			return 0;
+		break;
 
-    case WM_NCHITTEST:
-    {
-        const float scale = DpiScale(hwnd);
-        const int border = static_cast<int>(8.0f * scale);
-        const int titleHeight = static_cast<int>(36.0f * scale);
-        const int buttonsWidth = static_cast<int>(144.0f * scale);
-        const bool maximized = IsZoomed(hwnd) != FALSE;
+	case WM_NCHITTEST:
+	{
+		const float scale = DpiScale(hwnd);
+		const int border = static_cast<int>(8.0f * scale);
+		const int titleHeight = static_cast<int>(36.0f * scale);
+		const int buttonsWidth = static_cast<int>(144.0f * scale);
+		const bool maximized = IsZoomed(hwnd) != FALSE;
 
-        RECT wr{};
-        GetWindowRect(hwnd, &wr);
+		RECT wr{};
+		GetWindowRect(hwnd, &wr);
 
-        const POINT screenPoint{
-            GET_X_LPARAM(lParam),
-            GET_Y_LPARAM(lParam)
-        };
+		const POINT screenPoint{
+			GET_X_LPARAM(lParam),
+			GET_Y_LPARAM(lParam)
+		};
 
-        // Only a restored window has resize borders.
-        if (!maximized)
-        {
-            const bool left = screenPoint.x < wr.left + border;
-            const bool right = screenPoint.x >= wr.right - border;
-            const bool top = screenPoint.y < wr.top + border;
-            const bool bottom = screenPoint.y >= wr.bottom - border;
+		// Only a restored window has resize borders.
+		if (!maximized)
+		{
+			const bool left = screenPoint.x < wr.left + border;
+			const bool right = screenPoint.x >= wr.right - border;
+			const bool top = screenPoint.y < wr.top + border;
+			const bool bottom = screenPoint.y >= wr.bottom - border;
 
-            if (top && left) return HTTOPLEFT;
-            if (top && right) return HTTOPRIGHT;
-            if (bottom && left) return HTBOTTOMLEFT;
-            if (bottom && right) return HTBOTTOMRIGHT;
-            if (left) return HTLEFT;
-            if (right) return HTRIGHT;
-            if (top) return HTTOP;
-            if (bottom) return HTBOTTOM;
-        }
+			if (top && left) return HTTOPLEFT;
+			if (top && right) return HTTOPRIGHT;
+			if (bottom && left) return HTBOTTOMLEFT;
+			if (bottom && right) return HTBOTTOMRIGHT;
+			if (left) return HTLEFT;
+			if (right) return HTRIGHT;
+			if (top) return HTTOP;
+			if (bottom) return HTBOTTOM;
+		}
 
-        POINT clientPoint = screenPoint;
-        ScreenToClient(hwnd, &clientPoint);
+		POINT clientPoint = screenPoint;
+		ScreenToClient(hwnd, &clientPoint);
 
-        RECT clientRect{};
-        GetClientRect(hwnd, &clientRect);
+		RECT clientRect{};
+		GetClientRect(hwnd, &clientRect);
 
-        if (clientPoint.y >= 0 && clientPoint.y < titleHeight)
-        {
-            // Keep the ImGui minimize/maximize/close buttons clickable.
-            if (clientPoint.x >= clientRect.right - buttonsWidth)
-                return HTCLIENT;
+		if (clientPoint.y >= 0 && clientPoint.y < titleHeight)
+		{
+			// Keep the ImGui minimize/maximize/close buttons clickable.
+			if (clientPoint.x >= clientRect.right - buttonsWidth)
+				return HTCLIENT;
 
-            return HTCAPTION;
-        }
+			return HTCAPTION;
+		}
 
-        return HTCLIENT;
-    }
+		return HTCLIENT;
+	}
 
-    case WM_ENTERSIZEMOVE:
-        // g_interactiveResize.store(true, std::memory_order_release);
-        return 0;
+	case WM_ENTERSIZEMOVE:
+	{
+#if RESIZE_DIAG_ENABLED
+		ResizeDiag::ResetResizeMeasurements();
+#endif
 
-    case WM_SIZE:
-    {
-        const UINT width = LOWORD(lParam);
-        const UINT height = HIWORD(lParam);
-        const auto n = ++ResizeDiag::wmSizeCount;
+		// Leave this disabled, as decided.
+		// g_interactiveResize.store(true, std::memory_order_release);
 
-        ResizeDiag::Log(
-            "WM_SIZE #%llu hwnd=%p size=%ux%u wParam=%llu",
-            n,
-            hwnd,
-            width,
-            height,
-            static_cast<unsigned long long>(wParam));
+		return 0;
+	}
 
-        RECT rc{};
-        GetClientRect(hwnd, &rc);
+	case WM_SIZE:
+	{
+		const UINT width = LOWORD(lParam);
+		const UINT height = HIWORD(lParam);
 
-        g_mainResizeRequest.store(
-            PackSize(
-                static_cast<UINT>(rc.right - rc.left),
-                static_cast<UINT>(rc.bottom - rc.top)),
-            std::memory_order_release);
+#if RESIZE_DIAG_ENABLED
+		const auto n = ++ResizeDiag::wmSizeCount;
 
-        return 0;
-    }
+		ResizeDiag::Log(
+			"WM_SIZE #%llu hwnd=%p size=%ux%u wParam=%llu",
+			n,
+			hwnd,
+			width,
+			height,
+			static_cast<unsigned long long>(wParam));
+#endif
 
-    case WM_EXITSIZEMOVE:
-    {
-        RECT rc{};
-        GetClientRect(hwnd, &rc);
+		RECT rc{};
+		GetClientRect(hwnd, &rc);
 
-        g_mainResizeRequest.store(
-            PackSize(
-                static_cast<UINT>(rc.right - rc.left),
-                static_cast<UINT>(rc.bottom - rc.top)),
-            std::memory_order_release);
+		g_mainResizeRequest.store(
+			PackSize(
+				static_cast<UINT>(rc.right - rc.left),
+				static_cast<UINT>(rc.bottom - rc.top)),
+			std::memory_order_release);
 
-        g_interactiveResize.store(false, std::memory_order_release);
-        g_forceMainResize.store(true, std::memory_order_release);
-        return 0;
-    }
+		return 0;
+	}
 
-    case WM_DPICHANGED:
-    {
-        const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
-        SetWindowPos(
-            hwnd, nullptr,
-            suggested->left, suggested->top,
-            suggested->right - suggested->left,
-            suggested->bottom - suggested->top,
-            SWP_NOZORDER | SWP_NOACTIVATE);
-        return 0;
-    }
+	case WM_EXITSIZEMOVE:
+	{
+		RECT rc{};
+		GetClientRect(hwnd, &rc);
 
-    case WM_MOUSEMOVE:
-    case WM_LBUTTONDOWN:
-    case WM_LBUTTONUP:
-    case WM_RBUTTONDOWN:
-    case WM_RBUTTONUP:
-    case WM_MBUTTONDOWN:
-    case WM_MBUTTONUP:
-    case WM_XBUTTONDOWN:
-    case WM_XBUTTONUP:
-    case WM_MOUSEWHEEL:
-    case WM_MOUSEHWHEEL:
-    case WM_KEYDOWN:
-    case WM_KEYUP:
-    case WM_SYSKEYDOWN:
-    case WM_SYSKEYUP:
-    case WM_CHAR:
-    case WM_SETFOCUS:
-    case WM_KILLFOCUS:
-        QueueInput(message, wParam, lParam);
+		g_mainResizeRequest.store(
+			PackSize(
+				static_cast<UINT>(rc.right - rc.left),
+				static_cast<UINT>(rc.bottom - rc.top)),
+			std::memory_order_release);
 
-        // Capture/release stays on the HWND-owning UI thread.
-        if (message == WM_LBUTTONDOWN ||
-            message == WM_RBUTTONDOWN ||
-            message == WM_MBUTTONDOWN ||
-            message == WM_XBUTTONDOWN)
-        {
-            SetCapture(hwnd);
-        }
-        else if (message == WM_LBUTTONUP ||
-            message == WM_RBUTTONUP ||
-            message == WM_MBUTTONUP ||
-            message == WM_XBUTTONUP)
-        {
-            ReleaseCapture();
-        }
+		g_interactiveResize.store(false, std::memory_order_release);
+		g_forceMainResize.store(true, std::memory_order_release);
 
-        // Let Windows handle system shortcuts such as Alt+F4.
-        if (message == WM_SYSKEYDOWN || message == WM_SYSKEYUP)
-            return DefWindowProcW(hwnd, message, wParam, lParam);
+#if RESIZE_DIAG_ENABLED
+		SetTimer(hwnd, IDT_RESIZE_SUMMARY, 50, nullptr);
+#endif
+		return 0;
+	}
 
-        return 0;
+	case WM_TIMER:
+	{
+#if RESIZE_DIAG_ENABLED
+		if (wParam == IDT_RESIZE_SUMMARY)
+		{
+			const uint64_t requestedSize =
+				g_mainResizeRequest.load(std::memory_order_acquire);
 
-    case WM_CLOSE:
-        g_running.store(false, std::memory_order_release);
-        PostQuitMessage(0);
-        return 0;
+			const uint64_t appliedSize =
+				ResizeDiag::mainResizeAppliedSize.load(
+					std::memory_order_acquire);
 
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
-    }
+			// Keep waiting until the render thread has applied this size.
+			if (requestedSize != 0 && requestedSize == appliedSize)
+			{
+				KillTimer(hwnd, IDT_RESIZE_SUMMARY);
 
-    return DefWindowProcW(hwnd, message, wParam, lParam);
+				UINT width = 0;
+				UINT height = 0;
+				UnpackSize(requestedSize, width, height);
+
+				ResizeDiag::Log(
+					"Final main resize applied: size=%ux%u",
+					width,
+					height);
+
+				ResizeDiag::EndResizeMeasurements("final size acknowledged");
+			}
+
+			return 0;
+		}
+#endif
+		break;
+	}
+
+	case WM_DPICHANGED:
+	{
+		const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+		SetWindowPos(
+			hwnd, nullptr,
+			suggested->left, suggested->top,
+			suggested->right - suggested->left,
+			suggested->bottom - suggested->top,
+			SWP_NOZORDER | SWP_NOACTIVATE);
+		return 0;
+	}
+
+	case WM_MOUSEMOVE:
+	case WM_LBUTTONDOWN:
+	case WM_LBUTTONUP:
+	case WM_RBUTTONDOWN:
+	case WM_RBUTTONUP:
+	case WM_MBUTTONDOWN:
+	case WM_MBUTTONUP:
+	case WM_XBUTTONDOWN:
+	case WM_XBUTTONUP:
+	case WM_MOUSEWHEEL:
+	case WM_MOUSEHWHEEL:
+	case WM_KEYDOWN:
+	case WM_KEYUP:
+	case WM_SYSKEYDOWN:
+	case WM_SYSKEYUP:
+	case WM_CHAR:
+	case WM_SETFOCUS:
+	case WM_KILLFOCUS:
+		QueueInput(message, wParam, lParam);
+
+		// Capture/release stays on the HWND-owning UI thread.
+		if (message == WM_LBUTTONDOWN ||
+			message == WM_RBUTTONDOWN ||
+			message == WM_MBUTTONDOWN ||
+			message == WM_XBUTTONDOWN)
+		{
+			SetCapture(hwnd);
+		}
+		else if (message == WM_LBUTTONUP ||
+			message == WM_RBUTTONUP ||
+			message == WM_MBUTTONUP ||
+			message == WM_XBUTTONUP)
+		{
+			ReleaseCapture();
+		}
+
+		// Let Windows handle system shortcuts such as Alt+F4.
+		if (message == WM_SYSKEYDOWN || message == WM_SYSKEYUP)
+			return DefWindowProcW(hwnd, message, wParam, lParam);
+
+		return 0;
+
+	case WM_CLOSE:
+		g_running.store(false, std::memory_order_release);
+		PostQuitMessage(0);
+		return 0;
+
+	case WM_DESTROY:
+		PostQuitMessage(0);
+		return 0;
+	}
+
+	return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
 // -----------------------------------------------------------------------------
@@ -1551,22 +2054,22 @@ static LRESULT CALLBACK MainWndProc(
 
 void SceneWorkerThread()
 {
-    float angle = 0.0f;
+	float angle = 0.0f;
 
-    while (g_running.load(std::memory_order_acquire))
-    {
-        angle += 0.015f;
-        if (angle > 6.2831853f)
-            angle -= 6.2831853f;
+	while (g_running.load(std::memory_order_acquire))
+	{
+		angle += 0.015f;
+		if (angle > 6.2831853f)
+			angle -= 6.2831853f;
 
-        auto next = std::make_shared<SceneSnapshot>();
-        next->angle = angle;
-        g_snapshot.store(
-            std::const_pointer_cast<const SceneSnapshot>(next),
-            std::memory_order_release);
+		auto next = std::make_shared<SceneSnapshot>();
+		next->angle = angle;
+		g_snapshot.store(
+			std::const_pointer_cast<const SceneSnapshot>(next),
+			std::memory_order_release);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
-    }
+		std::this_thread::sleep_for(std::chrono::milliseconds(16));
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -1575,67 +2078,75 @@ void SceneWorkerThread()
 
 int WINAPI _wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 {
-    // Must happen before creating any HWND.
-    SetProcessDpiAwarenessContext(
-        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+	// Must happen before creating any HWND.
+	SetProcessDpiAwarenessContext(
+		DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-    WNDCLASSEXW wc{};
-    wc.cbSize = sizeof(wc);
-    wc.hInstance = instance;
-    wc.lpfnWndProc = MainWndProc;
-    wc.lpszClassName = L"ImGuiD3D11ThreeThreadSample";
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	WNDCLASSEXW wc{};
+	wc.cbSize = sizeof(wc);
+	wc.hInstance = instance;
+	wc.lpfnWndProc = MainWndProc;
+	wc.lpszClassName = L"ImGuiD3D11ThreeThreadSample";
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 
-    if (!RegisterClassExW(&wc))
-        return 1;
+	if (!RegisterClassExW(&wc))
+		return 1;
 
-    const DWORD style =
-        WS_POPUP | WS_THICKFRAME |
-        WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
+	const DWORD style =
+		WS_POPUP | WS_THICKFRAME |
+		WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
 
-    g_hwnd = CreateWindowExW(
-        0,
-        wc.lpszClassName,
-        L"DX11 ImGui Three-Thread Sample",
-        style,
-        100, 100, 1280, 800,
-        nullptr, nullptr, instance, nullptr);
+	g_hwnd = CreateWindowExW(
+		0,
+		wc.lpszClassName,
+		L"DX11 ImGui Three-Thread Sample",
+		style,
+		100, 100, 1280, 800,
+		nullptr, nullptr, instance, nullptr);
 
-    if (!g_hwnd)
-        return 1;
+	if (!g_hwnd)
+		return 1;
 
-    RECT rc{};
-    GetClientRect(g_hwnd, &rc);
-    g_mainResizeRequest.store(
-        PackSize(
-            static_cast<UINT>(rc.right - rc.left),
-            static_cast<UINT>(rc.bottom - rc.top)),
-        std::memory_order_release);
+	RECT rc{};
+	GetClientRect(g_hwnd, &rc);
+	g_mainResizeRequest.store(
+		PackSize(
+			static_cast<UINT>(rc.right - rc.left),
+			static_cast<UINT>(rc.bottom - rc.top)),
+		std::memory_order_release);
 
-    ShowWindow(g_hwnd, showCommand);
-    UpdateWindow(g_hwnd);
+	ShowWindow(g_hwnd, showCommand);
+	UpdateWindow(g_hwnd);
 
-    std::thread sceneThread(SceneWorkerThread);
-    std::thread renderThread(RenderThread);
+	std::thread sceneThread(SceneWorkerThread);
 
-    MSG msg{};
-    while (GetMessageW(&msg, nullptr, 0, 0) > 0)
-    {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
-    }
+#if SINGLE_THREAD_RENDER_TEST
+	// Test path: message handling, ImGui, and D3D11 all run on this thread.
+	RenderThread();
+#else
+	std::thread renderThread(RenderThread);
 
-    g_running.store(false, std::memory_order_release);
+	MSG msg{};
+	while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+	{
+		TranslateMessage(&msg);
+		DispatchMessageW(&msg);
+	}
+#endif
 
-    if (sceneThread.joinable())
-        sceneThread.join();
-    if (renderThread.joinable())
-        renderThread.join();
+	g_running.store(false, std::memory_order_release);
 
-    if (IsWindow(g_hwnd))
-        DestroyWindow(g_hwnd);
+	if (sceneThread.joinable())
+		sceneThread.join();
+#if !SINGLE_THREAD_RENDER_TEST
+	if (renderThread.joinable())
+		renderThread.join();
+#endif
 
-    UnregisterClassW(wc.lpszClassName, instance);
-    return 0;
+	if (IsWindow(g_hwnd))
+		DestroyWindow(g_hwnd);
+
+	UnregisterClassW(wc.lpszClassName, instance);
+	return 0;
 }
 /**/
