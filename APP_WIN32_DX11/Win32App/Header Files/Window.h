@@ -156,6 +156,7 @@ private:
 	std::atomic<bool> imguiWantsKeyboard{ false };
 	std::atomic<bool> imguiItemHovered{ false };
 	std::atomic<int> pendingImGuiNoMouse{ -1 }; // -1 = no change, 0 = allow mouse, 1 = disable mouse
+	std::atomic<int> imguiMouseCursor{ 0 }; // ImGuiMouseCursor_Arrow
 
 	std::mutex inputMutex;
 	std::deque<InputEvent> pendingInput;

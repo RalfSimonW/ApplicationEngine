@@ -180,6 +180,8 @@ void Window::PublishImGuiCaptureState()
 	imguiWantsMouse.store(io.WantCaptureMouse, std::memory_order_relaxed);
 	imguiWantsKeyboard.store(io.WantCaptureKeyboard, std::memory_order_relaxed);
 	imguiItemHovered.store(ImGui::IsAnyItemHovered(), std::memory_order_relaxed);
+	imguiMouseCursor.store(static_cast<int>(ImGui::GetMouseCursor()), std::memory_order_relaxed);
+
 }
 
 void Window::ApplyQueuedInputToImGui()
@@ -748,9 +750,50 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	case WM_SETCURSOR:
 		if (LOWORD(lParam) == HTCLIENT)
 		{
-			::SetCursor(cursorEnabled
-				? ::LoadCursor(nullptr, IDC_ARROW)
-				: nullptr);
+			if (!cursorEnabled)
+			{
+				::SetCursor(nullptr);
+				return TRUE;
+			}
+
+			HCURSOR cursor = ::LoadCursor(nullptr, IDC_ARROW);
+
+			switch (static_cast<ImGuiMouseCursor>(
+				imguiMouseCursor.load(std::memory_order_relaxed)))
+			{
+			case ImGuiMouseCursor_None:
+				cursor = nullptr;
+				break;
+			case ImGuiMouseCursor_TextInput:
+				cursor = ::LoadCursor(nullptr, IDC_IBEAM);
+				break;
+			case ImGuiMouseCursor_ResizeAll:
+				cursor = ::LoadCursor(nullptr, IDC_SIZEALL);
+				break;
+			case ImGuiMouseCursor_ResizeNS:
+				cursor = ::LoadCursor(nullptr, IDC_SIZENS);
+				break;
+			case ImGuiMouseCursor_ResizeEW:
+				cursor = ::LoadCursor(nullptr, IDC_SIZEWE);
+				break;
+			case ImGuiMouseCursor_ResizeNESW:
+				cursor = ::LoadCursor(nullptr, IDC_SIZENESW);
+				break;
+			case ImGuiMouseCursor_ResizeNWSE:
+				cursor = ::LoadCursor(nullptr, IDC_SIZENWSE);
+				break;
+			case ImGuiMouseCursor_Hand:
+				cursor = ::LoadCursor(nullptr, IDC_HAND);
+				break;
+			case ImGuiMouseCursor_NotAllowed:
+				cursor = ::LoadCursor(nullptr, IDC_NO);
+				break;
+			case ImGuiMouseCursor_Arrow:
+			default:
+				break;
+			}
+
+			::SetCursor(cursor);
 			return TRUE;
 		}
 		break;

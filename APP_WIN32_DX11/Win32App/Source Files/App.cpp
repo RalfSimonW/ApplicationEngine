@@ -36,9 +36,7 @@ void App::DoFrame()
 	const auto dt = timer.Mark() * speed_factor;
 
     wnd.Gfx().Begin();
-
-	wnd.PublishImGuiCaptureState();
-
+	
 	wnd.Gfx().SetCamera(cam.GetMatrix());
 
 	light->Bind(wnd.Gfx(), cam.GetMatrix());
@@ -62,6 +60,8 @@ void App::DoFrame()
 	
 	SpawnBoxWindowManagerWindow();
 	SpawnBoxWindows();
+
+	wnd.PublishImGuiCaptureState();
 
 	// Present
     wnd.Gfx().End();
