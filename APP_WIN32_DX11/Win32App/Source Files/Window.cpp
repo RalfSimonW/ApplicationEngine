@@ -502,7 +502,7 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 		return 0;
 
 	case WM_PAINT: {
-		if (inSizemove && pGfx) {
+		if (inSizemove && pGfx && DoFrameCallback) {
 			DoFrameCallback();
 		}
 		else
