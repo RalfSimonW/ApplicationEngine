@@ -32,7 +32,7 @@ private:
 	int x = 0, y = 0;
 	bool showDemoWindow = false;
 
-	ImguiManager imgui;
+	std::unique_ptr<ImguiManager> imgui;
 	Window wnd;
 	SimpleTimer timer;
 

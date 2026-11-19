@@ -119,9 +119,6 @@ Window::Window(int width, int height, const char* name)
 	// Newly created windows start off as hidden
 	ShowWindow(hWnd, SW_SHOWDEFAULT);
 
-	// Create graphics object
-	pGfx = std::make_unique<Graphics>(hWnd, width, height);
-
 	// Register mouse raw input device
 	RAWINPUTDEVICE rid;
 	rid.usUsagePage = 0x01; // Mouse page

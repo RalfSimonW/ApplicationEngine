@@ -133,6 +133,7 @@ void App::SpawnBoxWindows() noexcept
 
 void App::InitializeRenderResources()
 {
+	imgui = std::make_unique<ImguiManager>();
 	wnd.InitializeGraphics();
 
 	light = std::make_unique<PointLight>(wnd.Gfx());
