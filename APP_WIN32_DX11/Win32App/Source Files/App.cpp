@@ -224,6 +224,17 @@ void App::InitializeRenderResources()
 	);
 }
 
+void App::ShutdownRenderResources()
+{
+	boxes.clear();       // Non-owning pointers; clear before their objects.
+	drawables.clear();
+	nano.reset();
+	light.reset();
+
+	wnd.ShutdownGraphics();
+	imgui.reset();
+}
+
 void App::ShowModelWindow()
 {
 	if (ImGui::Begin("Model"))
@@ -268,6 +279,7 @@ void App::ShowRawInputWindow()
 
 App::~App()
 {
+	ShutdownRenderResources();
 }
 
 int App::Go()

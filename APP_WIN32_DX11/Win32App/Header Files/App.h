@@ -26,6 +26,9 @@ private:
 	void SpawnBoxWindows() noexcept;
 
 	void InitializeRenderResources();
+
+	void ShutdownRenderResources();
+
 private:
 	std::string commandLine;
 

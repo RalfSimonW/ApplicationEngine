@@ -135,7 +135,7 @@ Window::~Window()
 {
 	DestroyWindow(hWnd);
 
-	ImGui_ImplWin32_Shutdown();
+	ShutdownGraphics();
 }
 
 void Window::InitializeGraphics()
@@ -184,9 +184,17 @@ void Window::PublishImGuiCaptureState()
 
 void Window::ApplyQueuedInputToImGui()
 {
-	const auto events = DrainInputEvents();
 	ImGuiIO& io = ImGui::GetIO();
 
+	const int noMouse =
+		pendingImGuiNoMouse.exchange(-1, std::memory_order_acq_rel);
+
+	if (noMouse == 0)
+		io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+	else if (noMouse == 1)
+		io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+
+	const auto events = DrainInputEvents();
 	for (const auto& event : events)
 	{
 		switch (event.type)
@@ -246,6 +254,15 @@ void Window::ApplyQueuedInputToImGui()
 			break; // We’ll add keyboard, text, and focus next.
 		}
 	}
+}
+
+void Window::ShutdownGraphics()
+{
+	if (!pGfx)
+		return;
+
+	ImGui_ImplWin32_Shutdown();
+	pGfx.reset();
 }
 
 void Window::SetTitle(const std::string& title)
@@ -342,12 +359,12 @@ void Window::ShowCursor() noexcept
 
 void Window::EnableImGuiMouse() noexcept
 {
-	ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+	pendingImGuiNoMouse.store(0, std::memory_order_release);
 }
 
 void Window::DisableImGuiMouse() noexcept
 {
-	ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouse;
+	pendingImGuiNoMouse.store(1, std::memory_order_release);
 }
 
 void Window::BeginWindowDrag()
@@ -424,21 +441,6 @@ LRESULT CALLBACK Window::HandleMsgThunk(HWND hWnd, UINT msg, WPARAM wParam, LPAR
 
 LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noexcept
 {
-	const bool queuedMouseMessage =
-		msg == WM_MOUSEMOVE ||
-		msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
-		msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP ||
-		msg == WM_MOUSEWHEEL ||
-		msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN ||
-		msg == WM_KEYUP || msg == WM_SYSKEYUP ||
-		msg == WM_CHAR ||
-		msg == WM_SETFOCUS || msg == WM_KILLFOCUS;
-
-	if (!queuedMouseMessage &&	ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
-	{
-		return true;
-	}
-
 	static std::string text;
 	UINT_PTR uResult; // Set Timers return value
 	static UINT sWidth = 0, sHeight = 0;
@@ -743,6 +745,16 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 		mouse.OnWheelDelta(pt.x, pt.y, delta);
 		break;
 	}
+	case WM_SETCURSOR:
+		if (LOWORD(lParam) == HTCLIENT)
+		{
+			::SetCursor(cursorEnabled
+				? ::LoadCursor(nullptr, IDC_ARROW)
+				: nullptr);
+			return TRUE;
+		}
+		break;
+
 	/************** END MOUSE MESSAGES **************/
 
 	/************** RAW MOUSE MESSAGES **************/

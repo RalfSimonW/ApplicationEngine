@@ -97,6 +97,7 @@ public:
 	void ApplyPendingResize();
 	void PublishImGuiCaptureState();
 	void ApplyQueuedInputToImGui();
+	void ShutdownGraphics();
 
 	void SetTitle(const std::string& title);
 
@@ -154,6 +155,7 @@ private:
 	std::atomic<bool> imguiWantsMouse{ false };
 	std::atomic<bool> imguiWantsKeyboard{ false };
 	std::atomic<bool> imguiItemHovered{ false };
+	std::atomic<int> pendingImGuiNoMouse{ -1 }; // -1 = no change, 0 = allow mouse, 1 = disable mouse
 
 	std::mutex inputMutex;
 	std::deque<InputEvent> pendingInput;
