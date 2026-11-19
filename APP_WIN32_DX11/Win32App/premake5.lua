@@ -1,4 +1,4 @@
-project "Win32ThreadedApp"
+project "Win32App"
 	kind "WindowedApp"
 	language "C++"
 	cppdialect "C++20"

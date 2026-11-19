@@ -21,97 +21,27 @@ namespace dx = DirectX;
 GDIPlusManager gdipm;
 
 
-App::App(const std::string& commandLine) : commandLine(commandLine), wnd(1920, 1200, "To Texture"), light(wnd.Gfx())
+App::App(const std::string& commandLine) : commandLine(commandLine), wnd(1920, 1200, "To Texture")
 {
+	InitializeRenderResources();
+
 	wnd.SetDoFrameCallback(std::bind(&App::DoFrame, this));
-
-	class Factory
-	{
-	public:
-		Factory(Graphics& gfx)
-			:
-			gfx(gfx)
-		{
-		}
-		std::unique_ptr<Drawable> operator()()
-		{
-			const DirectX::XMFLOAT3 mat = { cdist(rng),cdist(rng),cdist(rng) };
-
-			switch (sdist(rng))
-			{
-			case 0:
-				return std::make_unique<Box>(
-					gfx, rng, adist, ddist,
-					odist, rdist, bdist, mat
-				);
-			case 1:
-				return std::make_unique<Cylinder>(
-					gfx, rng, adist, ddist, odist,
-					rdist, bdist, tdist
-				);
-			case 2:
-				return std::make_unique<Pyramid>(
-					gfx, rng, adist, ddist, odist,
-					rdist, tdist
-				);
-			case 3:
-				return std::make_unique<SkinnedBox>(
-					gfx, rng, adist, ddist,
-					odist, rdist
-				);
-			case 4:
-				return std::make_unique<AssTest>(
-					gfx, rng, adist, ddist,
-					odist, rdist, mat, 1.5f
-				);
-			default:
-				assert(false && "impossible drawable option in factory");
-				return {};
-			}
-		} // operator()
-	private:
-		Graphics& gfx;
-		std::mt19937 rng{ std::random_device{}() };
-		std::uniform_int_distribution<int> sdist{ 0,4 };
-
-		std::uniform_real_distribution<float> adist{ 0.0f,PI * 2.0f };
-		std::uniform_real_distribution<float> ddist{ 0.0f,PI * 0.5f };
-		std::uniform_real_distribution<float> odist{ 0.0f,PI * 0.08f };
-		std::uniform_real_distribution<float> rdist{ 6.0f,20.0f };
-		std::uniform_real_distribution<float> bdist{ 0.4f,3.0f };
-		std::uniform_real_distribution<float> cdist{ 0.0f,1.0f };
-		std::uniform_int_distribution<int> tdist{ 3,30 };
-		std::uniform_int_distribution<int> latdist{ 5,20 };
-		std::uniform_int_distribution<int> longdist{ 10,40 };
-		std::uniform_int_distribution<int> typedist{ 0, 2 };
-	}; // Factory
-
-	drawables.reserve(nDrawables);
-
-	std::generate_n(std::back_inserter(drawables), nDrawables, Factory{ wnd.Gfx() });
-
-	// Init box pointers for editing instance parameters
-	for (auto& pd : drawables)
-	{
-		if (auto pb = dynamic_cast<Box*>(pd.get()))
-		{
-			boxes.push_back(pb);
-		}
-	}
-
-	wnd.Gfx().SetProjection(dx::XMMatrixPerspectiveLH(1.0f, 9.0f / 16.0f, 0.5f, 40.0f));
-
-} // App
+}
 
 void App::DoFrame()
 {
+	wnd.ApplyPendingResize();
+	wnd.ApplyQueuedInputToImGui();
+
 	const auto dt = timer.Mark() * speed_factor;
 
     wnd.Gfx().Begin();
 
+	wnd.PublishImGuiCaptureState();
+
 	wnd.Gfx().SetCamera(cam.GetMatrix());
 
-	light.Bind(wnd.Gfx(), cam.GetMatrix());
+	light->Bind(wnd.Gfx(), cam.GetMatrix());
 	
 	
 	// Render geometry
@@ -120,7 +50,7 @@ void App::DoFrame()
 		d->Update(wnd.kbd.KeyIsPressed(VK_SPACE) ? 0.0f : dt); // No update while SPACE is pressed
 		d->Draw(wnd.Gfx());
 	}
-	light.Draw(wnd.Gfx());
+	light->Draw(wnd.Gfx());
 		
 
 	
@@ -128,7 +58,7 @@ void App::DoFrame()
 	SpawnSimulationWindow();
 	// Control camera and light
 	cam.SpawnControlWindow();
-	light.SpawnControlWindow();
+	light->SpawnControlWindow();
 	
 	SpawnBoxWindowManagerWindow();
 	SpawnBoxWindows();
@@ -199,6 +129,98 @@ void App::SpawnBoxWindows() noexcept
 			i++;
 		}
 	}
+}
+
+void App::InitializeRenderResources()
+{
+	wnd.InitializeGraphics();
+
+	light = std::make_unique<PointLight>(wnd.Gfx());
+	nano = std::make_unique<Model>(
+		wnd.Gfx(),
+		"Models\\nano_textured\\nanosuit.obj"
+	);
+
+	// Move the existing local Factory class definition here unchanged.
+	class Factory
+	{
+	public:
+		Factory(Graphics& gfx)
+			:
+			gfx(gfx)
+		{
+		}
+		std::unique_ptr<Drawable> operator()()
+		{
+			const DirectX::XMFLOAT3 mat = { cdist(rng),cdist(rng),cdist(rng) };
+
+			switch (sdist(rng))
+			{
+			case 0:
+				return std::make_unique<Box>(
+					gfx, rng, adist, ddist,
+					odist, rdist, bdist, mat
+				);
+			case 1:
+				return std::make_unique<Cylinder>(
+					gfx, rng, adist, ddist, odist,
+					rdist, bdist, tdist
+				);
+			case 2:
+				return std::make_unique<Pyramid>(
+					gfx, rng, adist, ddist, odist,
+					rdist, tdist
+				);
+			case 3:
+				return std::make_unique<SkinnedBox>(
+					gfx, rng, adist, ddist,
+					odist, rdist
+				);
+			case 4:
+				return std::make_unique<AssTest>(
+					gfx, rng, adist, ddist,
+					odist, rdist, mat, 1.5f
+				);
+			default:
+				assert(false && "impossible drawable option in factory");
+				return {};
+			}
+		} // operator()
+	private:
+		Graphics& gfx;
+		std::mt19937 rng{ std::random_device{}() };
+		std::uniform_int_distribution<int> sdist{ 0,4 };
+
+		std::uniform_real_distribution<float> adist{ 0.0f,PI * 2.0f };
+		std::uniform_real_distribution<float> ddist{ 0.0f,PI * 0.5f };
+		std::uniform_real_distribution<float> odist{ 0.0f,PI * 0.08f };
+		std::uniform_real_distribution<float> rdist{ 6.0f,20.0f };
+		std::uniform_real_distribution<float> bdist{ 0.4f,3.0f };
+		std::uniform_real_distribution<float> cdist{ 0.0f,1.0f };
+		std::uniform_int_distribution<int> tdist{ 3,30 };
+		std::uniform_int_distribution<int> latdist{ 5,20 };
+		std::uniform_int_distribution<int> longdist{ 10,40 };
+		std::uniform_int_distribution<int> typedist{ 0, 2 };
+	}; // Factory
+
+	drawables.reserve(nDrawables);
+	std::generate_n(
+		std::back_inserter(drawables),
+		nDrawables,
+		Factory{ wnd.Gfx() }
+	);
+
+	for (auto& pd : drawables)
+	{
+		if (auto pb = dynamic_cast<Box*>(pd.get()))
+		{
+			boxes.push_back(pb);
+		}
+	}
+
+	wnd.Gfx().SetProjection(
+		dx::XMMatrixPerspectiveLH(1.0f, 9.0f / 16.0f, 0.5f, 40.0f)
+	);
 }
 
 void App::ShowModelWindow()

@@ -1,5 +1,4 @@
-﻿/**/
-#define WIN32_LEAN_AND_MEAN
+﻿#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <windowsx.h>
 #include <d3d11.h>
@@ -896,11 +895,12 @@ static bool ApplySceneResize()
 	static bool hasApplied = false;
 
 	const uint64_t request =
-		g_sceneResizeRequest.load(std::memory_order_acquire);
+		g_mainResizeRequest.load(std::memory_order_acquire);
 
 	const auto now = std::chrono::steady_clock::now();
 
-	if (request != lastObservedRequest)
+	const bool requestChanged = request != lastObservedRequest;
+	if (requestChanged)
 	{
 		lastObservedRequest = request;
 		lastRequestChange = now;
@@ -909,6 +909,35 @@ static bool ApplySceneResize()
 	UINT width = 0;
 	UINT height = 0;
 	UnpackSize(request, width, height);
+
+#if RESIZE_DIAG_ENABLED
+	if (requestChanged)
+	{
+		UINT mainWidth = 0;
+		UINT mainHeight = 0;
+		const uint64_t mainRequest =
+			g_mainResizeRequest.load(std::memory_order_acquire);
+		UnpackSize(mainRequest, mainWidth, mainHeight);
+
+		UINT appliedWidth = 0;
+		UINT appliedHeight = 0;
+		const uint64_t mainApplied =
+			ResizeDiag::mainResizeAppliedSize.load(std::memory_order_acquire);
+		UnpackSize(mainApplied, appliedWidth, appliedHeight);
+
+		ResizeDiag::Log(
+			"ApplySceneResize request=0x%016llX requested=%ux%u "
+			"sceneCurrent=%ux%u mainRequest=0x%016llX (%ux%u) "
+			"mainApplied=0x%016llX (%ux%u)",
+			static_cast<unsigned long long>(request),
+			width, height,
+			g_d3d.sceneWidth, g_d3d.sceneHeight,
+			static_cast<unsigned long long>(mainRequest),
+			mainWidth, mainHeight,
+			static_cast<unsigned long long>(mainApplied),
+			appliedWidth, appliedHeight);
+	}
+#endif
 
 	if (width == 0 || height == 0)
 		return true;
@@ -2149,4 +2178,3 @@ int WINAPI _wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand)
 	UnregisterClassW(wc.lpszClassName, instance);
 	return 0;
 }
-/**/

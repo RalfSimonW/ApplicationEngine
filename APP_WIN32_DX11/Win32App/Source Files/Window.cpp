@@ -7,6 +7,7 @@
 #include "imgui_impl_win32.h"
 
 #include <iostream>
+#include <vector>
 
 // Window class stuff
 Window::WindowClass Window::WindowClass::wndClass;
@@ -16,6 +17,7 @@ static WindowsMessageMap winMessageMap;
 
 // Forward declare Win32 message handler located in imgui_impl_win32.cpp
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandlerEx(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam, ImGuiIO& io);
 
 Window::WindowClass::WindowClass() noexcept
 	:
@@ -60,6 +62,30 @@ HINSTANCE Window::WindowClass::GetInstance() noexcept
 	return wndClass.hInst;
 }
 
+
+void Window::QueueInputEvent(const InputEvent& event)
+{
+	std::lock_guard<std::mutex> lock(inputMutex);
+	pendingInput.push_back(event);
+}
+
+std::vector<Window::InputEvent> Window::DrainInputEvents()
+{
+	std::vector<InputEvent> events;
+
+	{
+		std::lock_guard<std::mutex> lock(inputMutex);
+		events.reserve(pendingInput.size());
+
+		while (!pendingInput.empty())
+		{
+			events.push_back(pendingInput.front());
+			pendingInput.pop_front();
+		}
+	}
+
+	return events;
+}
 
 // Window Stuff
 Window::Window(int width, int height, const char* name)
@@ -113,6 +139,116 @@ Window::~Window()
 	DestroyWindow(hWnd);
 
 	ImGui_ImplWin32_Shutdown();
+}
+
+void Window::InitializeGraphics()
+{
+	if (!pGfx)
+	{
+		pGfx = std::make_unique<Graphics>(hWnd, width, height);
+	}
+}
+
+void Window::RequestResize(UINT width, UINT height) noexcept
+{
+	// Ignore minimized/zero-sized dimensions; they are not valid ResizeBuffers sizes.
+	if (width == 0 || height == 0)
+		return;
+
+	const std::uint64_t packed =
+		(static_cast<std::uint64_t>(width) << 32) | height;
+
+	// Keep only the newest requested size.
+	pendingResize.store(packed, std::memory_order_release);
+}
+
+void Window::ApplyPendingResize()
+{
+	const std::uint64_t packed =
+		pendingResize.exchange(0, std::memory_order_acquire);
+
+	if (packed == 0 || !pGfx)
+		return;
+
+	const UINT width = static_cast<UINT>(packed >> 32);
+	const UINT height = static_cast<UINT>(packed & 0xFFFFFFFFu);
+
+	pGfx->OnWindowSizeChanged(width, height);
+}
+
+void Window::PublishImGuiCaptureState()
+{
+	const ImGuiIO& io = ImGui::GetIO();
+
+	imguiWantsMouse.store(io.WantCaptureMouse, std::memory_order_relaxed);
+	imguiWantsKeyboard.store(io.WantCaptureKeyboard, std::memory_order_relaxed);
+	imguiItemHovered.store(ImGui::IsAnyItemHovered(), std::memory_order_relaxed);
+}
+
+void Window::ApplyQueuedInputToImGui()
+{
+	const auto events = DrainInputEvents();
+	ImGuiIO& io = ImGui::GetIO();
+
+	for (const auto& event : events)
+	{
+		switch (event.type)
+		{
+		case InputEvent::Type::MousePosition:
+			io.AddMousePosEvent(event.x, event.y);
+			break;
+
+		case InputEvent::Type::MouseButton:
+			io.AddMouseButtonEvent(
+				static_cast<int>(event.code),
+				event.down
+			);
+			break;
+
+		case InputEvent::Type::MouseWheel:
+			io.AddMouseWheelEvent(event.x, event.y);
+			break;
+
+		case InputEvent::Type::Win32KeyboardMessage:
+			ImGui_ImplWin32_WndProcHandlerEx(
+				hWnd, event.message, event.wParam, event.lParam, io);
+
+			switch (event.message)
+			{
+			case WM_KEYDOWN:
+			case WM_SYSKEYDOWN:
+				if (!imguiWantsKeyboard.load(std::memory_order_relaxed) &&
+					(!(event.lParam & 0x40000000) || kbd.AutorepeatIsEnabled()))
+				{
+					kbd.OnKeyPressed(static_cast<unsigned char>(event.wParam));
+				}
+				break;
+
+			case WM_KEYUP:
+			case WM_SYSKEYUP:
+				if (!imguiWantsKeyboard.load(std::memory_order_relaxed))
+				{
+					kbd.OnKeyReleased(static_cast<unsigned char>(event.wParam));
+				}
+				break;
+
+			case WM_CHAR:
+				if (!imguiWantsKeyboard.load(std::memory_order_relaxed))
+				{
+					kbd.OnChar(static_cast<unsigned char>(event.wParam));
+				}
+				break;
+
+			case WM_KILLFOCUS:
+				kbd.ClearState();
+				break;
+			}
+			break;
+
+		default:
+			break; // We’ll add keyboard, text, and focus next.
+		}
+	}
 }
 
 void Window::SetTitle(const std::string& title)
@@ -289,29 +425,25 @@ LRESULT CALLBACK Window::HandleMsgThunk(HWND hWnd, UINT msg, WPARAM wParam, LPAR
 	return pWnd->HandleMsg(hWnd, msg, wParam, lParam);
 }
 
-// Win32 message handler
-// You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
-// 
-// - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application,
-//   or clear/overwrite your copy of the mouse data.
-// 
-// - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application,
-//   or clear/overwrite your copy of the keyboard data.
-// 
-// Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
 LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noexcept
 {
-	// - - - - Check imgui_impl_win32.cpp for further information about window messages used by ImGui - - - -
-	if (ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
+	const bool queuedMouseMessage =
+		msg == WM_MOUSEMOVE ||
+		msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
+		msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP ||
+		msg == WM_MOUSEWHEEL ||
+		msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN ||
+		msg == WM_KEYUP || msg == WM_SYSKEYUP ||
+		msg == WM_CHAR ||
+		msg == WM_SETFOCUS || msg == WM_KILLFOCUS;
+
+	if (!queuedMouseMessage &&	ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam))
 	{
-		return true;	// This sort of signaling that ImGui handled something isn't done very often						
-						// - Example: In method ImGui_ImplWin32_WndProcHandlerEx WM_SETCURSOR returns 1
+		return true;
 	}
 
-	const auto& imio = ImGui::GetIO();
-
 	static std::string text;
-	UINT_PTR uResult; // Set Timer's return value
+	UINT_PTR uResult; // Set Timers return value
 	static UINT sWidth = 0, sHeight = 0;
 	
 	static bool s_in_suspend = false;
@@ -321,66 +453,17 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	switch (msg)
 	{
 	case WM_NCCALCSIZE:
-		/** /
-		// Remove the standard caption/frame from the client-area calculation.
-		if (wParam)
-			return 0;
-		/**/
 
 		break;
 
 	case WM_NCHITTEST:
-		/** /
-		{
-			// POINT point = {	(UINT)LOWORD(lParam), (UINT)HIWORD(lParam)	};
-
-			const int x = (UINT)LOWORD(lParam);
-			const int y = (UINT)HIWORD(lParam);
-
-			RECT r{};
-			GetWindowRect(hWnd, &r);
-
-			// Scale the resize grip with the window's DPI.
-			const UINT dpi = 96; //GetDpiForWindow(hWnd);
-			const int grip = MulDiv(8, dpi, 96);
-
-			const bool left = x < r.left + grip;
-			const bool right = x >= r.right - grip;
-			const bool top = y < r.top + grip;
-			const bool bottom = y >= r.bottom - grip;
-
-			if (!IsZoomed(hWnd))
-			{
-				if (top && left)     return HTTOPLEFT;
-				if (top && right)    return HTTOPRIGHT;
-				if (bottom && left)  return HTBOTTOMLEFT;
-				if (bottom && right) return HTBOTTOMRIGHT;
-				if (left)            return HTLEFT;
-				if (right)           return HTRIGHT;
-				if (top)             return HTTOP;
-				if (bottom)          return HTBOTTOM;
-			}
-
-			POINT clientPoint{ x, y };
-			ScreenToClient(hWnd, &clientPoint);
-
-			if (clientPoint.y >= 0 && clientPoint.y < 40)
-				return HTCAPTION;
-
-			return HTCLIENT;
-		}
-		/**/
 
 		break;
 
 	case WM_SIZE:
-		sWidth = (UINT)LOWORD(lParam); // Queue resize
-		sHeight = (UINT)HIWORD(lParam);
-
-		if (!inSizemove && pGfx) // Restore minimized window
-		{
-			pGfx->OnWindowSizeChanged(LOWORD(lParam), HIWORD(lParam));
-		}
+		sWidth = static_cast<UINT>(LOWORD(lParam));
+		sHeight = static_cast<UINT>(HIWORD(lParam));
+		RequestResize(sWidth, sHeight);
 
 		break;
 
@@ -404,7 +487,10 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 		RECT rc;
 		GetClientRect(hWnd, &rc);
 
-		pGfx->OnWindowSizeChanged(rc.right - rc.left, rc.bottom - rc.top);
+		RequestResize(
+			static_cast<UINT>(rc.right - rc.left),
+			static_cast<UINT>(rc.bottom - rc.top)
+		);
 		
 		break;
 
@@ -416,7 +502,6 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 
 	case WM_PAINT: {
 		if (inSizemove && pGfx) {
-			pGfx->OnWindowSizeChanged(sWidth, sHeight); //[!] Do before Tick() for smooth ImGui stuff
 			DoFrameCallback();
 		}
 		else
@@ -428,19 +513,11 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 
 		break;
 	}
-	// ---- ---- ---- ----
 
-		// We don't want the DefProc to handle this message because we want
-		// our destructor to destroy the window, so return 0 instead of break
 	case WM_CLOSE:
 		PostQuitMessage(0);
 
 		return 0;
-
-	case WM_KILLFOCUS:
-		kbd.ClearState(); // Clear keystate when window loses focus to prevent input getting "stuck"
-
-		break;
 
 	case WM_ACTIVATE:
 		OutputDebugString("activeate\n");
@@ -465,64 +542,27 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- KEYBOARD MESSAGES ---- ---- ---- ---- ---- ---- ---- ---- ----
 	case WM_KEYDOWN:
-		// Syskey commands need to be handled to track ALT key (VK_MENU) and F10
 	case WM_SYSKEYDOWN:
-		// Stifle this keyboard message if imgui wants to capture
-		if (imio.WantCaptureKeyboard)
-		{
-			break;
-		}
-		if (!(lParam & 0x40000000) || kbd.AutorepeatIsEnabled()) // filter autorepeat
-		{
-			kbd.OnKeyPressed(static_cast<unsigned char>(wParam));
-		}
-
-		if (wParam == 'C')
-		{
-			////// Add a console window
-			////if (!CreateNewConsole(1024))
-			////	return -1;
-			////text.clear();
-			////text = "Console created""! ";
-			////SetWindowText(hWnd, text.c_str());
-		}
-		else if (wParam == 'X')
-		{
-			////ReleaseConsole();
-			////text = " ""Console released""! ";
-			////SetWindowText(hWnd, text.c_str());
-		}
-
-		break; // We do default window procedure handling
-
 	case WM_KEYUP:
 	case WM_SYSKEYUP:
-		// Stifle this keyboard message if imgui wants to capture
-		if (imio.WantCaptureKeyboard)
-		{
-			break;
-		}
-		kbd.OnKeyReleased(static_cast<unsigned char>(wParam));
-
-		break;
-
 	case WM_CHAR:
-		// Stifle this keyboard message if imgui wants to capture
-		if (imio.WantCaptureKeyboard)
-		{
-			break;
-		}
-		kbd.OnChar(static_cast<unsigned char>(wParam));
-
+	case WM_SETFOCUS:
+	case WM_KILLFOCUS:
+	{
+		InputEvent event{};
+		event.type = InputEvent::Type::Win32KeyboardMessage;
+		event.message = msg;
+		event.wParam = wParam;
+		event.lParam = lParam;
+		QueueInputEvent(event);
 		break;
+	}
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- MOUSE MESSAGES ---- ---- ---- ---- ---- ---- ---- ---- ----
 
 	case WM_MOUSEMOVE:
 	{
-		// ----------------
 		UpdateWindowDrag();
-		// ----------------
 	
 		const POINTS pt = MAKEPOINTS(lParam);
 
@@ -537,8 +577,14 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 			}
 			break;
 		}
-		// Stifle this mouse message if imgui wants to capture
-		if (imio.WantCaptureMouse)
+
+		InputEvent event{};
+		event.type = InputEvent::Type::MousePosition;
+		event.x = static_cast<float>(pt.x);
+		event.y = static_cast<float>(pt.y);
+		QueueInputEvent(event);
+		
+		if (!imguiWantsMouse.load(std::memory_order_relaxed))
 		{
 			break;
 		}
@@ -570,30 +616,41 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	}
 	case WM_LBUTTONDOWN:
 	{
-		// ------------------------------------------
-		mouseY = (UINT)HIWORD(lParam);
-		if (mouseY >= 0 && mouseY < TITLE_BAR_HEIGHT)
+		mouseY = static_cast<int>(HIWORD(lParam));
+
+		const bool inCustomTitleBar =
+			mouseY >= 0 && mouseY < TITLE_BAR_HEIGHT;
+
+		const bool overImGuiItem =
+			imguiItemHovered.load(std::memory_order_relaxed);
+
+		if (inCustomTitleBar && !overImGuiItem)
 		{
+			titleBarDragActive = true;
 			BeginWindowDrag();
 			return 0;
 		}
-		// ------------------------------------------
 
-		// Stifle this mouse message if imgui wants to capture
-		if (imio.WantCaptureMouse)
-		{
-			break;
-		}
-		const POINTS pt = MAKEPOINTS(lParam);
-		mouse.OnLeftPressed(pt.x, pt.y);
-		// Bring window to foreground on left click client region
-		//SetForegroundWindow(hWnd);
+		titleBarDragActive = false;
+
+		InputEvent event{};
+		event.type = InputEvent::Type::MouseButton;
+		event.code = 0; // ImGui left button
+		event.down = true;
+		QueueInputEvent(event);
+
 		break;
+
 	}
 	case WM_RBUTTONDOWN:
 	{
-		// Stifle this mouse message if imgui wants to capture
-		if (imio.WantCaptureMouse)
+		InputEvent event{};
+		event.type = InputEvent::Type::MouseButton;
+		event.code = 1; // ImGui right button
+		event.down = true;
+		QueueInputEvent(event);
+
+		if (imguiWantsMouse.load(std::memory_order_relaxed))
 		{
 			break;
 		}
@@ -603,10 +660,6 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	}
 	case WM_LBUTTONUP:
 	{
-		// -------------
-		EndWindowDrag();
-		// -------------
-
 		SetForegroundWindow(hWnd);
 
 		if (!cursorEnabled)
@@ -616,8 +669,24 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 			HideCursor();
 		}
 
-		// Stifle this mouse message if imgui wants to capture
-		if (imio.WantCaptureMouse)
+		const bool wasTitleBarDrag = titleBarDragActive;
+		titleBarDragActive = false;
+
+		if (wasTitleBarDrag)
+		{
+			EndWindowDrag();
+		}
+
+		if (!wasTitleBarDrag)
+		{
+			InputEvent event{};
+			event.type = InputEvent::Type::MouseButton;
+			event.code = 0;
+			event.down = false;
+			QueueInputEvent(event);
+		}
+
+		if (imguiWantsMouse.load(std::memory_order_relaxed))
 		{
 			break;
 		}
@@ -633,8 +702,16 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	}
 	case WM_RBUTTONUP:
 	{
-		// Stifle this keyboard message if imgui wants to capture
-		if (imio.WantCaptureKeyboard)
+		if (mouseY >= TITLE_BAR_HEIGHT)
+		{
+			InputEvent event{};
+			event.type = InputEvent::Type::MouseButton;
+			event.code = 1;
+			event.down = false;
+			QueueInputEvent(event);
+		}
+
+		if (imguiWantsKeyboard.load(std::memory_order_relaxed))
 		{
 			break;
 		}
@@ -650,15 +727,17 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	}
 	case WM_MOUSEWHEEL:
 	{
-		// spdlog
-		spdlog::info("Hello from spdlog!");
-		//spdlog::warn("This is a warning with a number: {}", 42);
-		//spdlog::error("An error occurred: {}", "something went wrong");
-		//spdlog::critical(winMessageMap(msg, lParam, wParam).c_str());
-		spdlog::info(winMessageMap(msg, lParam, wParam).c_str());
+		// Another log
+		//spdlog::info("Hello from spdlog!");
+		//spdlog::info(winMessageMap(msg, lParam, wParam).c_str());
 
-		// Stifle this mouse message if imgui wants to capture
-		if (imio.WantCaptureMouse)
+		InputEvent event{};
+		event.type = InputEvent::Type::MouseWheel;
+		event.y = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) /
+			static_cast<float>(WHEEL_DELTA);
+		QueueInputEvent(event);
+
+		if (imguiWantsMouse.load(std::memory_order_relaxed))
 		{
 			break;
 		}

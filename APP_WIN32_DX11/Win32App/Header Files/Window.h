@@ -9,6 +9,11 @@
 #include <optional>
 #include <memory>
 
+#include <atomic>
+#include <cstdint>
+#include <deque>
+#include <mutex>
+#include <vector>
 
 class Window
 {
@@ -36,6 +41,35 @@ public:
 		using Exception::Exception;
 		const char* GetType() const noexcept override;
 	};
+	struct InputEvent
+	{
+		enum class Type
+		{
+			MousePosition,
+			MouseButton,
+			MouseWheel,
+			Key,
+			Character,
+			Focus,
+			Win32KeyboardMessage
+		};
+
+		Type type{};
+		float x = 0.0f;
+		float y = 0.0f;
+		std::uint32_t code = 0;       // Button, virtual key, or character
+		std::uint32_t scanCode = 0;   // Keyboard events
+		bool down = false;            // Button/key down, or focused
+		bool extended = false;        // Extended-key flag
+		
+		UINT message = 0;
+		WPARAM wParam = 0;
+		LPARAM lParam = 0;
+	};
+
+	void QueueInputEvent(const InputEvent& event);
+	std::vector<InputEvent> DrainInputEvents();
+
 private:
 	// Singleton manages registration/cleanup of window class
 	class WindowClass
@@ -57,6 +91,12 @@ public:
 	~Window();
 	Window(const Window&) = delete;
 	Window& operator=(const Window&) = delete;
+
+	void InitializeGraphics();
+	void RequestResize(UINT width, UINT height) noexcept;
+	void ApplyPendingResize();
+	void PublishImGuiCaptureState();
+	void ApplyQueuedInputToImGui();
 
 	void SetTitle(const std::string& title);
 
@@ -109,4 +149,15 @@ private:
 	static constexpr int TITLE_BAR_HEIGHT = 34;
 
 	DoFrameCallbackFn DoFrameCallback;
+
+	std::atomic<std::uint64_t> pendingResize{ 0 };
+	std::atomic<bool> imguiWantsMouse{ false };
+	std::atomic<bool> imguiWantsKeyboard{ false };
+	std::atomic<bool> imguiItemHovered{ false };
+
+	std::mutex inputMutex;
+	std::deque<InputEvent> pendingInput;
+
+	bool titleBarDragActive = false;
+
 };

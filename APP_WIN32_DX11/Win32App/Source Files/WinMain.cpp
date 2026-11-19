@@ -1,5 +1,4 @@
-﻿/**/
-#include "App.h"
+﻿#include "App.h"
 
 int CALLBACK WinMain(
 	_In_ HINSTANCE hInstance,
@@ -26,4 +25,3 @@ int CALLBACK WinMain(
 	}
 	return -1;
 }
-/**/

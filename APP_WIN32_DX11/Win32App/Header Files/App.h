@@ -24,6 +24,8 @@ private:
 	void SpawnSimulationWindow() noexcept;
 	void SpawnBoxWindowManagerWindow() noexcept;
 	void SpawnBoxWindows() noexcept;
+
+	void InitializeRenderResources();
 private:
 	std::string commandLine;
 
@@ -39,9 +41,9 @@ private:
 	bool show_demo_window = true;
 	float speed_factor = .2f;
 	Camera cam;
-	PointLight light;
 
-	Model nano{ wnd.Gfx(),"Models\\nano_textured\\nanosuit.obj" };
+	std::unique_ptr<PointLight> light;
+	std::unique_ptr<Model> nano;
 
 	// useSimple
 	static constexpr size_t nDrawables = 180;
