@@ -7,6 +7,9 @@
 #include "Mesh.h"
 
 #include <set>
+#include <atomic>
+#include <thread>
+#include <future>
 
 class App
 {
@@ -28,6 +31,8 @@ private:
 	void InitializeRenderResources();
 
 	void ShutdownRenderResources();
+
+	void RenderThreadMain();
 
 private:
 	std::string commandLine;
@@ -63,4 +68,9 @@ private:
 		float y = 0.0f;
 		float z = 0.0f;
 	} pos;
+
+	std::thread renderThread;
+	std::atomic<bool> renderStop{ false };
+	std::promise<void> renderInitPromise;
+
 };

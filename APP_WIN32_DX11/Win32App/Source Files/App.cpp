@@ -235,6 +235,27 @@ void App::ShutdownRenderResources()
 	imgui.reset();
 }
 
+void App::RenderThreadMain()
+{
+	try
+	{
+		InitializeRenderResources();
+		renderInitPromise.set_value();
+	}
+	catch (...)
+	{
+		renderInitPromise.set_exception(std::current_exception());
+		return;
+	}
+
+	while (!renderStop.load(std::memory_order_acquire))
+	{
+		DoFrame();
+	}
+
+	ShutdownRenderResources();
+}
+
 void App::ShowModelWindow()
 {
 	if (ImGui::Begin("Model"))
