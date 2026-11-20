@@ -71,10 +71,10 @@ void Graphics::Initialize(HWND hWnd, int width, int height) {
 	mOutputWidth = std::max(width, 1);
 	mOutputHeight = std::max(height, 1);
 
-	//const float dpiScale = DpiScale(hWindow);
-	//ImGui::GetStyle().ScaleAllSizes(dpiScale);
-	//ImGui::GetIO().FontGlobalScale = dpiScale;
-	//OutputDebugString(("Graphics::Initialize (dpiScale): " + std::to_string(dpiScale) + "\n").c_str());
+	const float dpiScale = DpiScale(hWindow);
+	ImGui::GetStyle().ScaleAllSizes(dpiScale);
+	ImGui::GetIO().FontGlobalScale = dpiScale;
+	// OutputDebugString(("Graphics::Initialize (dpiScale): " + std::to_string(dpiScale) + "\n").c_str());
 
 	// Create device and swap chain before init ImGui
 	CreateDeviceAndSwapChain(hWindow, mOutputWidth, mOutputHeight);
@@ -313,7 +313,7 @@ void Graphics::Resize(UINT width, UINT height) {
 		DXGI_FORMAT_UNKNOWN,
 		0
 	);
-	OutputDebugString((std::to_string(mOutputWidth) + " - " + std::to_string(mOutputHeight) + "\n").c_str());
+	// OutputDebugString(("Graphics::Resize: " + std::to_string(mOutputWidth) + " - " + std::to_string(mOutputHeight) + "\n").c_str());
 
 	if (FAILED(hr))
 		return;
@@ -330,7 +330,8 @@ void Graphics::Resize(UINT width, UINT height) {
 	m_viewport.MaxDepth = 1.0f;
 } // Resize
 
-void Graphics::BeginFrame() {
+void Graphics::RenderFrameBegin(const ImVec4& clearColor)
+{
 	// Render the application scene into the off-screen texture.
 	cpDeviceContext->OMSetRenderTargets(
 		1,
@@ -339,76 +340,7 @@ void Graphics::BeginFrame() {
 	);
 
 	cpDeviceContext->RSSetViewports(1, &m_viewport);
-} // BeginFrame
 
-void Graphics::RenderFrame(const ImVec4& clearColor) {
-	// Clear the off-screen scene texture.
-	const float sceneClearColor[] =
-	{
-		clearColor.x,
-		clearColor.y,
-		clearColor.z,
-		clearColor.w
-	};
-
-	cpDeviceContext->ClearRenderTargetView(
-		SceneRTV.Get(),
-		sceneClearColor
-	);
-
-	cpDeviceContext->ClearDepthStencilView(
-		cpDepthStencilView.Get(),
-		D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
-		1.0f,
-		0
-	);
-
-	// Now render ImGui to the swap-chain back buffer.
-	cpDeviceContext->OMSetRenderTargets(
-		1,
-		cpBackBufferRTV.GetAddressOf(),
-		nullptr
-	);
-
-	const float backBufferClearColor[] =
-	{
-		0.08f,
-		0.08f,
-		0.10f,
-		1.0f
-	};
-
-	cpDeviceContext->ClearRenderTargetView(
-		cpBackBufferRTV.Get(),
-		backBufferClearColor
-	);
-
-	ImGui::Render();
-
-	ImGui_ImplDX11_RenderDrawData(
-		ImGui::GetDrawData()
-	);
-
-	// Required for Dear ImGui multi-viewport support.
-	ImGuiIO& io = ImGui::GetIO();
-
-	if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
-	{
-		ImGui::UpdatePlatformWindows();
-		ImGui::RenderPlatformWindowsDefault();
-
-		// Dear ImGui's secondary viewport rendering can change the current
-		// D3D11 render state. Restore the main target for safety.
-		cpDeviceContext->OMSetRenderTargets(
-			1,
-			cpBackBufferRTV.GetAddressOf(),
-			nullptr
-		);
-	}
-} // RenderFrame
-
-void Graphics::RenderFrameBegin(const ImVec4& clearColor)
-{
 	// Clear the off-screen scene texture.
 	const float sceneClearColor[] =
 	{
@@ -467,6 +399,21 @@ void Graphics::RenderFrameEnd()
 	{
 		ImGui::UpdatePlatformWindows();
 		ImGui::RenderPlatformWindowsDefault();
+
+		const auto& viewports = ImGui::GetPlatformIO().Viewports;
+		for (int i = 1; i < viewports.Size; ++i)
+		{
+			ImGuiViewport* viewport = viewports[i];
+			if (viewport == nullptr || viewport->PlatformHandle == nullptr)
+				continue;
+
+			HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
+			const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
+			const bool hasResizeBorder = (style & WS_THICKFRAME) != 0;
+
+			// Inspect hwnd, style, and hasResizeBorder in the debugger.
+			OutputDebugString(("Graphics::RenderFrameEnd: " + std::to_string(hasResizeBorder) + "\n").c_str());
+		}
 
 		// Dear ImGui's secondary viewport rendering can change the current
 		// D3D11 render state. Restore the main target for safety.
@@ -546,15 +493,14 @@ void Graphics::Begin() {
 	float fbsx = disFrambuffScale.x;
 	float dsy = disSize.y;
 	float fbsy = disFrambuffScale.y;
-	OutputDebugString((std::to_string(dsx) + " - " + std::to_string(dsy) + "\n").c_str());
-	OutputDebugString((std::to_string(fbsx) + " - " + std::to_string(fbsy) + "\n").c_str());
+	// OutputDebugString((std::to_string(dsx) + " - " + std::to_string(dsy) + "\n").c_str());
+	// OutputDebugString((std::to_string(fbsx) + " - " + std::to_string(fbsy) + "\n").c_str());
 
 	DrawCustomTitleAndMenuAboveDockSpace();
 
 	ShowScene();
 
 	// Build the scene and render it.
-	BeginFrame();
 	RenderFrameBegin(clearColor);
 }
 

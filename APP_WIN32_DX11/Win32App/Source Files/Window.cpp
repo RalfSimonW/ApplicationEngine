@@ -1,8 +1,6 @@
 #include "Window.h"
-////#include "RedirectConsole.h"
 #include "WindowsMessageMap.h"
 #include "spdlog.h"
-/* #include "resource.h" */
 #include "WindowsThrowMacros.h"
 #include "imgui_impl_win32.h"
 
@@ -32,18 +30,12 @@ Window::WindowClass::WindowClass() noexcept
 	wc.cbClsExtra = 0;
 	wc.cbWndExtra = 0;
 	wc.hInstance = GetInstance();
-	wc.hIcon = static_cast<HICON>(LoadImage(
-		GetInstance(), 0 /* MAKEINTRESOURCE(IDI_ICON1) */,
-		IMAGE_ICON, 32, 32, 0
-	));
+	wc.hIcon = static_cast<HICON>(LoadImage(GetInstance(), 0, IMAGE_ICON, 32, 32, 0));
 	wc.hCursor = nullptr;
 	wc.hbrBackground = nullptr;
 	wc.lpszMenuName = nullptr;
 	wc.lpszClassName = GetName();
-	wc.hIconSm = static_cast<HICON>(LoadImage(
-		GetInstance(), 0 /* MAKEINTRESOURCE(IDI_ICON1) */,
-		IMAGE_ICON, 16, 16, 0
-	));
+	wc.hIconSm = static_cast<HICON>(LoadImage(GetInstance(), 0,	IMAGE_ICON, 16, 16, 0));
 	RegisterClassEx(&wc);
 }
 
@@ -99,19 +91,16 @@ Window::Window(int width, int height, const char* name)
 	wr.right = width + wr.left;
 	wr.top = 0;
 	wr.bottom = height + wr.top;
-	if (AdjustWindowRect(&wr, WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_VISIBLE /*WS_CAPTION | WS_SYSMENU*/, FALSE) == 0)
+	if (AdjustWindowRect(&wr, WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_VISIBLE, FALSE) == 0)
 	{
 		throw WND_LAST_EXCEPT();
 	}
 	// Create window and get window handle
 	hWnd = CreateWindow(
 		WindowClass::GetName(), name,
-		WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX |	WS_MAXIMIZEBOX | WS_SYSMENU | WS_VISIBLE,
-		/*WS_CAPTION | WS_SYSMENU | WS_OVERLAPPEDWINDOW*/
-		CW_USEDEFAULT, CW_USEDEFAULT, wr.right - wr.left, wr.bottom - wr.top,
-		nullptr, nullptr, WindowClass::GetInstance(), this
-	);
-	// check for error
+		WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX |	WS_MAXIMIZEBOX | WS_SYSMENU | WS_VISIBLE, CW_USEDEFAULT, CW_USEDEFAULT,
+		wr.right - wr.left, wr.bottom - wr.top,	nullptr, nullptr, WindowClass::GetInstance(), this);
+	// Check for error
 	if (hWnd == nullptr)
 	{
 		throw WND_LAST_EXCEPT();
@@ -521,19 +510,19 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 		return 0;
 
 	case WM_ACTIVATE:
-		OutputDebugString("activeate\n");
+		OutputDebugString("activate\n");
 		// Confine/free cursor on window to foreground/background if cursor disabled
 		if (!cursorEnabled)
 		{
 			if (wParam & WA_ACTIVE)
 			{
-				OutputDebugString("activeate => confine\n");
+				OutputDebugString("activate => confine\n");
 				ConfineCursor();
 				HideCursor();
 			}
 			else
 			{
-				OutputDebugString("activeate => free\n");
+				OutputDebugString("activate => free\n");
 				FreeCursor();
 				ShowCursor();
 			}

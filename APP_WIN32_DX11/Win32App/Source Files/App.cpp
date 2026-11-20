@@ -253,6 +253,22 @@ void App::RenderThreadMain()
 
 	while (!renderStop.load(std::memory_order_acquire))
 	{
+		MSG msg{};
+		while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+		{
+			if (msg.message == WM_QUIT)
+			{
+				renderStop.store(true, std::memory_order_release);
+				break;
+			}
+
+			TranslateMessage(&msg);
+			DispatchMessageW(&msg);
+		}
+
+		if (renderStop.load(std::memory_order_acquire))
+			break;
+
 		DoFrame();
 	}
 

@@ -81,9 +81,7 @@ public:
 	void ReleaseDepthBuffer();
 	void ReleaseSceneTexture();
 	void Resize(UINT width, UINT height);
-	void BeginFrame();
 
-	void RenderFrame(const ImVec4& clearColor);
 	void RenderFrameBegin(const ImVec4& clearColor);
 	void RenderFrameEnd();
 
