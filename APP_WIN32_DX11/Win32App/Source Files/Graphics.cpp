@@ -71,13 +71,13 @@ void Graphics::Initialize(HWND hWnd, int width, int height) {
 	mOutputWidth = std::max(width, 1);
 	mOutputHeight = std::max(height, 1);
 
-	const float dpiScale = DpiScale(hWindow);
-	ImGui::GetStyle().ScaleAllSizes(dpiScale);
-	ImGui::GetIO().FontGlobalScale = dpiScale;
-	OutputDebugString(("Graphics::Initialize (dpiScale): " + std::to_string(dpiScale) + "\n").c_str());
+	//const float dpiScale = DpiScale(hWindow);
+	//ImGui::GetStyle().ScaleAllSizes(dpiScale);
+	//ImGui::GetIO().FontGlobalScale = dpiScale;
+	//OutputDebugString(("Graphics::Initialize (dpiScale): " + std::to_string(dpiScale) + "\n").c_str());
 
 	// Create device and swap chain before init ImGui
-	CreateDeviceAndSwapChain(hWindow, width, height);
+	CreateDeviceAndSwapChain(hWindow, mOutputWidth, mOutputHeight);
 
 	CreateMainRenderTarget();
 	
@@ -532,6 +532,10 @@ void Graphics::Begin() {
 	// Start a new ImGui frame
 	ImGui_ImplDX11_NewFrame();
 	ImGui_ImplWin32_NewFrame();
+
+	const float dpiScale = DpiScale(hWindow);
+	ImGui::GetIO().DisplayFramebufferScale = ImVec2(dpiScale, dpiScale);
+
 	ImGui::NewFrame();
 
 	RECT rect;
@@ -599,8 +603,9 @@ void Graphics::ShowScene()
 
 void Graphics::DrawCustomTitleAndMenuAboveDockSpace()
 {
-	const float dpiScale = DpiScale(hWindow);
+	//const float dpiScale = DpiScale(hWindow);
 	// OutputDebugString((std::to_string(dpiScale) + "\n").c_str());
+
 	ImGuiViewport* mainViewport = ImGui::GetMainViewport();
 
 	ImGui::SetNextWindowPos(mainViewport->WorkPos);
@@ -627,7 +632,7 @@ void Graphics::DrawCustomTitleAndMenuAboveDockSpace()
 
 	ImGui::BeginChild(
 		"TitleBar",
-		ImVec2(0.0f, 32.0f * dpiScale), // Title bar height
+		ImVec2(0.0f, 32.0f /** dpiScale*/), // Title bar height
 		false,
 		ImGuiWindowFlags_NoScrollbar |
 		ImGuiWindowFlags_NoScrollWithMouse
@@ -635,12 +640,12 @@ void Graphics::DrawCustomTitleAndMenuAboveDockSpace()
 
 	ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(0, 255, 0, 255));
 	// Title text position
-	ImGui::SetCursorPos(ImVec2(12.0f * dpiScale, 7.0f * dpiScale));
+	ImGui::SetCursorPos(ImVec2(12.0f /** dpiScale*/, 7.0f /** dpiScale*/));
 	ImGui::TextUnformatted("ImGui with Win32 + DX11 backend");
 	ImGui::PopStyleColor();
 
 	// Right-side button placement
-	ImGui::SameLine(ImGui::GetWindowWidth() - 70.0f * dpiScale);
+	ImGui::SameLine(ImGui::GetWindowWidth() - 70.0f /** dpiScale*/);
 
 	if (ImGui::Button("_"))
 	{
@@ -664,11 +669,11 @@ void Graphics::DrawCustomTitleAndMenuAboveDockSpace()
 	// 2. Menu bar below the title bar
 	// -------------------------------------------------
 	ImGui::PushStyleColor(ImGuiCol_ChildBg,	ImVec4(0.0f, 0.66f, 0.33f, 1.0f));
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f * dpiScale, 4.0f * dpiScale));	// Menu bar padding
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f /** dpiScale*/, 4.0f/* * dpiScale*/));	// Menu bar padding
 
 	ImGui::BeginChild(
 		"MenuBar",
-		ImVec2(0.0f, 24.0f * dpiScale), // Menu bar height
+		ImVec2(0.0f, 24.0f /** dpiScale*/), // Menu bar height
 		false,
 		ImGuiWindowFlags_MenuBar |
 		ImGuiWindowFlags_NoScrollbar |
