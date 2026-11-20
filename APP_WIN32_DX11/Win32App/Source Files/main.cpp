@@ -6,7 +6,6 @@
 #include <wrl/client.h>
 
 #include "imgui.h"
-#include "imgui.h"
 #include "imgui_internal.h"
 
 #include <atomic>

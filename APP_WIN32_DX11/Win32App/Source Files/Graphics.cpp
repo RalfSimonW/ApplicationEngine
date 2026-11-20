@@ -18,7 +18,19 @@
 namespace wrl = Microsoft::WRL;
 namespace dx = DirectX;
 
-// ("d3d11.lib", "D3DCompiler.lib") You find libraries here: premake5.lua
+static float DpiScale(HWND hwnd) noexcept
+{
+	using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+
+	static const auto getDpiForWindow =
+		reinterpret_cast<GetDpiForWindowFn>(
+			GetProcAddress(
+				GetModuleHandleW(L"user32.dll"),
+				"GetDpiForWindow"));
+
+	const UINT dpi = getDpiForWindow ? getDpiForWindow(hwnd) : 96u;
+	return static_cast<float>(dpi) / 96.0f;
+}
 
 static ImVec2 previousSize(-1.0f, -1.0f);
 
@@ -561,6 +573,8 @@ void Graphics::ShowScene()
 
 void Graphics::DrawCustomTitleAndMenuAboveDockSpace()
 {
+	const float dpiScale = DpiScale(hWindow);
+	// OutputDebugString((std::to_string(dpiScale) + "\n").c_str());
 	ImGuiViewport* mainViewport = ImGui::GetMainViewport();
 
 	ImGui::SetNextWindowPos(mainViewport->WorkPos);
@@ -587,19 +601,20 @@ void Graphics::DrawCustomTitleAndMenuAboveDockSpace()
 
 	ImGui::BeginChild(
 		"TitleBar",
-		ImVec2(0.0f, 32.0f),
+		ImVec2(0.0f, 32.0f * dpiScale), // Title bar height
 		false,
 		ImGuiWindowFlags_NoScrollbar |
 		ImGuiWindowFlags_NoScrollWithMouse
 	);
 
 	ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(0, 255, 0, 255));
-	ImGui::SetCursorPos(ImVec2(12.0f, 7.0f));
+	// Title text position
+	ImGui::SetCursorPos(ImVec2(12.0f * dpiScale, 7.0f * dpiScale));
 	ImGui::TextUnformatted("ImGui with Win32 + DX11 backend");
 	ImGui::PopStyleColor();
 
-	// Optional buttons on the right
-	ImGui::SameLine(ImGui::GetWindowWidth() - 70.0f);
+	// Right-side button placement
+	ImGui::SameLine(ImGui::GetWindowWidth() - 70.0f * dpiScale);
 
 	if (ImGui::Button("_"))
 	{
@@ -623,11 +638,11 @@ void Graphics::DrawCustomTitleAndMenuAboveDockSpace()
 	// 2. Menu bar below the title bar
 	// -------------------------------------------------
 	ImGui::PushStyleColor(ImGuiCol_ChildBg,	ImVec4(0.0f, 0.66f, 0.33f, 1.0f));
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 4.0f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f * dpiScale, 4.0f * dpiScale));	// Menu bar padding
 
 	ImGui::BeginChild(
 		"MenuBar",
-		ImVec2(0.0f, 24.0f),
+		ImVec2(0.0f, 24.0f * dpiScale), // Menu bar height
 		false,
 		ImGuiWindowFlags_MenuBar |
 		ImGuiWindowFlags_NoScrollbar |
