@@ -23,9 +23,10 @@ GDIPlusManager gdipm;
 
 App::App(const std::string& commandLine) : commandLine(commandLine), wnd(1920, 1200, "To Texture")
 {
-	InitializeRenderResources();
+}
 
-	wnd.SetDoFrameCallback(std::bind(&App::DoFrame, this));
+App::~App()
+{
 }
 
 void App::DoFrame()
@@ -244,7 +245,9 @@ void App::RenderThreadMain()
 	}
 	catch (...)
 	{
-		renderInitPromise.set_exception(std::current_exception());
+		const auto error = std::current_exception();
+		ShutdownRenderResources();
+		renderInitPromise.set_exception(error);
 		return;
 	}
 
@@ -298,22 +301,40 @@ void App::ShowRawInputWindow()
 	ImGui::End();
 }
 
-App::~App()
-{
-	ShutdownRenderResources();
-}
-
 int App::Go()
 {
-	while (true)
+	auto renderReady = renderInitPromise.get_future();
+
+	renderStop.store(false, std::memory_order_release);
+	renderThread = std::thread(&App::RenderThreadMain, this);
+
+	try
 	{
-		// Process all messages pending, but to not block for new messages
+		renderReady.get();
+	}
+	catch (...)
+	{
+		if (renderThread.joinable())
+		{
+			renderThread.join();
+		}
+		throw;
+	}
+
+	for (;;)
+	{
 		if (const auto ecode = Window::ProcessMessages())
 		{
-			// If return optional has value, means we're quitting so return exit code
+			renderStop.store(true, std::memory_order_release);
+
+			if (renderThread.joinable())
+			{
+				renderThread.join();
+			}
+
 			return *ecode;
 		}
-		else
-			DoFrame();
+
+		::WaitMessage();
 	}
 }
