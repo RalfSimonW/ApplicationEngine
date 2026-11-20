@@ -58,9 +58,23 @@ Graphics::~Graphics()
 void Graphics::Initialize(HWND hWnd, int width, int height) {
 	hWindow = hWnd;
 
+	RECT clientRect{};
+	if (::GetClientRect(hWindow, &clientRect) &&
+		clientRect.right > clientRect.left &&
+		clientRect.bottom > clientRect.top)
+	{
+		width = clientRect.right - clientRect.left;
+		height = clientRect.bottom - clientRect.top;
+	}
+
 	// Avoid creating zero-sized buffers.
 	mOutputWidth = std::max(width, 1);
 	mOutputHeight = std::max(height, 1);
+
+	const float dpiScale = DpiScale(hWindow);
+	ImGui::GetStyle().ScaleAllSizes(dpiScale);
+	ImGui::GetIO().FontGlobalScale = dpiScale;
+	OutputDebugString(("Graphics::Initialize (dpiScale): " + std::to_string(dpiScale) + "\n").c_str());
 
 	// Create device and swap chain before init ImGui
 	CreateDeviceAndSwapChain(hWindow, width, height);
@@ -299,6 +313,7 @@ void Graphics::Resize(UINT width, UINT height) {
 		DXGI_FORMAT_UNKNOWN,
 		0
 	);
+	OutputDebugString((std::to_string(mOutputWidth) + " - " + std::to_string(mOutputHeight) + "\n").c_str());
 
 	if (FAILED(hr))
 		return;
@@ -518,6 +533,17 @@ void Graphics::Begin() {
 	ImGui_ImplDX11_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
+
+	RECT rect;
+	GetClientRect(hWindow, &rect);
+	ImVec2 disSize = ImGui::GetIO().DisplaySize;
+	ImVec2 disFrambuffScale = ImGui::GetIO().DisplayFramebufferScale;
+	float dsx = disSize.x;
+	float fbsx = disFrambuffScale.x;
+	float dsy = disSize.y;
+	float fbsy = disFrambuffScale.y;
+	OutputDebugString((std::to_string(dsx) + " - " + std::to_string(dsy) + "\n").c_str());
+	OutputDebugString((std::to_string(fbsx) + " - " + std::to_string(fbsy) + "\n").c_str());
 
 	DrawCustomTitleAndMenuAboveDockSpace();
 
