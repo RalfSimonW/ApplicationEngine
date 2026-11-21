@@ -89,17 +89,8 @@ void App::DoFrame()
 	wnd.Gfx().SetCamera(cam.GetMatrix());
 
 	light->Bind(wnd.Gfx(), cam.GetMatrix());
-	
-	
-	// Render geometry
-	for (auto& d : drawables)
-	{
-		d->Update(wnd.kbd.KeyIsPressed(VK_SPACE) ? 0.0f : dt); // No update while SPACE is pressed
-		d->Draw(wnd.Gfx());
-	}
-	light->Draw(wnd.Gfx());
-		
 
+	UpdateScene(dt);
 	
 	// ImGui windows
 	SpawnSimulationWindow();
@@ -347,6 +338,17 @@ void App::InstallViewportSizingCallbacks()
 			kViewportSubclassId,
 			reinterpret_cast<DWORD_PTR>(this));
 	}
+}
+
+void App::UpdateScene(float dt)
+{
+	// Render geometry
+	for (auto& d : drawables)
+	{
+		d->Update(wnd.kbd.KeyIsPressed(VK_SPACE) ? 0.0f : dt); // No update while SPACE is pressed
+		d->Draw(wnd.Gfx());
+	}
+	light->Draw(wnd.Gfx());
 }
 
 void App::ShowModelWindow()

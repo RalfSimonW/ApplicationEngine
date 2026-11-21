@@ -36,6 +36,8 @@ private:
 
 	void InstallViewportSizingCallbacks();
 
+	void UpdateScene(float dt);
+
 private:
 	std::string commandLine;
 
