@@ -32,6 +32,33 @@ static float DpiScale(HWND hwnd) noexcept
 	return static_cast<float>(dpi) / 96.0f;
 }
 
+static void EnsureSecondaryViewportsAreResizable()
+{
+	ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
+
+	for (int i = 1; i < platformIO.Viewports.Size; ++i)
+	{
+		ImGuiViewport* viewport = platformIO.Viewports[i];
+		if (viewport == nullptr || viewport->PlatformHandle == nullptr)
+			continue;
+
+		HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
+		LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+
+		if ((style & WS_THICKFRAME) == 0)
+		{
+			SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME);
+
+			SetWindowPos(
+				hwnd,
+				nullptr,
+				0, 0, 0, 0,
+				SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+				SWP_NOACTIVATE | SWP_FRAMECHANGED);
+		}
+	}
+}
+
 static ImVec2 previousSize(-1.0f, -1.0f);
 
 Graphics::Graphics(HWND hWnd, int width, int height)
@@ -398,6 +425,7 @@ void Graphics::RenderFrameEnd()
 	if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
 	{
 		ImGui::UpdatePlatformWindows();
+		EnsureSecondaryViewportsAreResizable();
 		ImGui::RenderPlatformWindowsDefault();
 
 		const auto& viewports = ImGui::GetPlatformIO().Viewports;
