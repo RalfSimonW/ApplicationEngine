@@ -1,3 +1,6 @@
+#include <Windows.h>
+#include <commctrl.h>
+
 #include "App.h"
 #include "Melon.h"
 #include "Pyramid.h"
@@ -15,6 +18,47 @@
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
+
+#pragma comment(lib, "Comctl32.lib")
+
+namespace
+{
+	constexpr UINT_PTR kViewportSubclassId = 0xDA10;
+	constexpr UINT_PTR kViewportResizeTimerId = 0xDA11;
+
+	LRESULT CALLBACK ViewportSizingProc(
+		HWND hwnd,
+		UINT message,
+		WPARAM wParam,
+		LPARAM lParam,
+		UINT_PTR subclassId,
+		DWORD_PTR refData)
+	{
+		auto* app = reinterpret_cast<App*>(refData);
+
+		if (message == WM_ENTERSIZEMOVE)
+		{
+			SetTimer(hwnd, kViewportResizeTimerId, 16, nullptr);
+		}
+		else if (message == WM_TIMER && wParam == kViewportResizeTimerId)
+		{
+			// This runs on the render thread inside the native sizing loop.
+			app->DoFrame();
+			return 0;
+		}
+		else if (message == WM_EXITSIZEMOVE)
+		{
+			KillTimer(hwnd, kViewportResizeTimerId);
+		}
+		else if (message == WM_NCDESTROY)
+		{
+			KillTimer(hwnd, kViewportResizeTimerId);
+			RemoveWindowSubclass(hwnd, ViewportSizingProc, subclassId);
+		}
+
+		return DefSubclassProc(hwnd, message, wParam, lParam);
+	}
+}
 
 namespace dx = DirectX;
 
@@ -66,6 +110,8 @@ void App::DoFrame()
 
 	// Present
     wnd.Gfx().End();
+
+	InstallViewportSizingCallbacks();
 }
 
 void App::SpawnSimulationWindow() noexcept
@@ -273,6 +319,30 @@ void App::RenderThreadMain()
 	}
 
 	ShutdownRenderResources();
+}
+
+void App::InstallViewportSizingCallbacks()
+{
+	if (ImGui::GetCurrentContext() == nullptr)
+		return;
+
+	ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
+
+	// Viewport 0 is the main window, owned by the UI thread.
+	for (int i = 1; i < platformIO.Viewports.Size; ++i)
+	{
+		ImGuiViewport* viewport = platformIO.Viewports[i];
+		if (viewport == nullptr || viewport->PlatformHandle == nullptr)
+			continue;
+
+		HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
+
+		SetWindowSubclass(
+			hwnd,
+			ViewportSizingProc,
+			kViewportSubclassId,
+			reinterpret_cast<DWORD_PTR>(this));
+	}
 }
 
 void App::ShowModelWindow()

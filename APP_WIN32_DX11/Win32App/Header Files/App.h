@@ -34,6 +34,8 @@ private:
 
 	void RenderThreadMain();
 
+	void InstallViewportSizingCallbacks();
+
 private:
 	std::string commandLine;
 
