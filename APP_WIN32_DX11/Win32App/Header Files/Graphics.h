@@ -80,7 +80,7 @@ public:
 	void ReleaseMainRenderTarget();
 	void ReleaseDepthBuffer();
 	void ReleaseSceneTexture();
-	void Resize(UINT width, UINT height);
+	void Resize(UINT width, UINT height, bool resizeScene);
 
 	void RenderFrameBegin(const ImVec4& clearColor);
 	void RenderFrameEnd();
@@ -93,7 +93,7 @@ public:
 
 	void ShowScene();
 
-	void OnWindowSizeChanged(int width, int height);
+	void OnWindowSizeChanged(int width, int height, bool resizeScene);
 
 	void DrawCustomTitleAndMenuAboveDockSpace();
 
@@ -149,6 +149,7 @@ private:
 	D3D11_VIEWPORT m_viewport = {};
 	UINT g_pendingWidth = 0;
 	UINT g_pendingHeight = 0;
+	bool g_pendingSceneResize = false;
 	bool g_minimized = false;
 
 	UINT SceneWidth = 0;

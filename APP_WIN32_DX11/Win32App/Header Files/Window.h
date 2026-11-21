@@ -93,7 +93,7 @@ public:
 	Window& operator=(const Window&) = delete;
 
 	void InitializeGraphics();
-	void RequestResize(UINT width, UINT height) noexcept;
+	void RequestResize(UINT width, UINT height, bool resizeScene) noexcept;
 	void ApplyPendingResize();
 	void PublishImGuiCaptureState();
 	void ApplyQueuedInputToImGui();
@@ -151,7 +151,16 @@ private:
 
 	DoFrameCallbackFn DoFrameCallback;
 
-	std::atomic<std::uint64_t> pendingResize{ 0 };
+	struct PendingResizeRequest
+	{
+		UINT width = 0;
+		UINT height = 0;
+		bool resizeScene = true;
+	};
+
+	std::mutex resizeMutex;
+	PendingResizeRequest pendingResize;
+
 	std::atomic<bool> imguiWantsMouse{ false };
 	std::atomic<bool> imguiWantsKeyboard{ false };
 	std::atomic<bool> imguiItemHovered{ false };

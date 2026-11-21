@@ -135,31 +135,32 @@ void Window::InitializeGraphics()
 	}
 }
 
-void Window::RequestResize(UINT width, UINT height) noexcept
+void Window::RequestResize(UINT width, UINT height, bool resizeScene) noexcept
 {
-	// Ignore minimizedzero sized dimensions. They are not valid ResizeBuffers sizes.
 	if (width == 0 || height == 0)
 		return;
 
-	const std::uint64_t packed =
-		(static_cast<std::uint64_t>(width) << 32) | height;
-
-	// Keep only the newest requested size.
-	pendingResize.store(packed, std::memory_order_release);
+	std::lock_guard<std::mutex> lock(resizeMutex);
+	pendingResize = { width, height, resizeScene };
 }
 
 void Window::ApplyPendingResize()
 {
-	const std::uint64_t packed =
-		pendingResize.exchange(0, std::memory_order_acquire);
+	PendingResizeRequest request;
+	{
+		std::lock_guard<std::mutex> lock(resizeMutex);
+		request = pendingResize;
+		pendingResize = {};
+	}
 
-	if (packed == 0 || !pGfx)
+	if (request.width == 0 || request.height == 0 || !pGfx)
 		return;
 
-	const UINT width = static_cast<UINT>(packed >> 32);
-	const UINT height = static_cast<UINT>(packed & 0xFFFFFFFFu);
-
-	pGfx->OnWindowSizeChanged(width, height);
+	pGfx->OnWindowSizeChanged(
+		static_cast<int>(request.width),
+		static_cast<int>(request.height),
+		request.resizeScene
+	);
 }
 
 void Window::PublishImGuiCaptureState()
@@ -453,7 +454,7 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	case WM_SIZE:
 		sWidth = static_cast<UINT>(LOWORD(lParam));
 		sHeight = static_cast<UINT>(HIWORD(lParam));
-		RequestResize(sWidth, sHeight);
+		RequestResize(sWidth, sHeight, !inSizemove);
 
 		break;
 
@@ -479,7 +480,8 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 
 		RequestResize(
 			static_cast<UINT>(rc.right - rc.left),
-			static_cast<UINT>(rc.bottom - rc.top)
+			static_cast<UINT>(rc.bottom - rc.top),
+			true
 		);
 		
 		break;

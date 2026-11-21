@@ -108,6 +108,9 @@ void Graphics::Initialize(HWND hWnd, int width, int height) {
 
 	CreateMainRenderTarget();
 	
+	SceneWidth = mOutputWidth;
+	SceneHeight = mOutputHeight;
+
 	CreateDepthBuffer();
 	
 	CreateSceneTexture();
@@ -214,8 +217,8 @@ void Graphics::CreateDepthBuffer(){
 	cpDepthStencilView.Reset();
 
 	D3D11_TEXTURE2D_DESC depthDesc = {};
-	depthDesc.Width = mOutputWidth;
-	depthDesc.Height = mOutputHeight;
+	depthDesc.Width = SceneWidth;
+	depthDesc.Height = SceneHeight;
 	depthDesc.MipLevels = 1;
 	depthDesc.ArraySize = 1;
 	depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
@@ -246,8 +249,8 @@ void Graphics::CreateSceneTexture() {
 	SceneSRV.Reset(); // m_sceneTextureSRV
 
 	D3D11_TEXTURE2D_DESC sceneDesc = {};
-	sceneDesc.Width = mOutputWidth;
-	sceneDesc.Height = mOutputHeight;
+	sceneDesc.Width = SceneWidth;
+	sceneDesc.Height = SceneHeight;
 	sceneDesc.MipLevels = 1;
 	sceneDesc.ArraySize = 1;
 	sceneDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -313,49 +316,68 @@ void Graphics::ReleaseSceneTexture() {
 	m_sceneTexture.Reset();
 } // ReleaseSceneTexture
 
-void Graphics::Resize(UINT width, UINT height) {
+void Graphics::Resize(UINT width, UINT height, bool resizeScene)
+{
 	if (!cpSwapChain || !cpDevice || !cpDeviceContext)
 		return;
 
 	if (width == 0 || height == 0)
 		return;
 
-	if (width == mOutputWidth && height == mOutputHeight)
+	const bool outputChanged =
+		width != static_cast<UINT>(mOutputWidth) ||
+		height != static_cast<UINT>(mOutputHeight);
+
+	const bool sceneChanged =
+		resizeScene &&
+		(width != SceneWidth || height != SceneHeight);
+
+	if (!outputChanged && !sceneChanged)
 		return;
 
-	mOutputWidth = width;
-	mOutputHeight = height;
+	if (outputChanged)
+	{
+		ReleaseMainRenderTarget();
 
-	// Release every resource created with the old dimensions.
-	ReleaseMainRenderTarget();
-	ReleaseDepthBuffer();
-	ReleaseSceneTexture();
+		HRESULT hr = cpSwapChain->ResizeBuffers(
+			0,
+			width,
+			height,
+			DXGI_FORMAT_UNKNOWN,
+			0
+		);
 
-	// ResizeBuffers requires all references to the old swap-chain buffers
-	// to have been released.
-	HRESULT hr = cpSwapChain->ResizeBuffers(
-		0,
-		mOutputWidth,
-		mOutputHeight,
-		DXGI_FORMAT_UNKNOWN,
-		0
-	);
-	// OutputDebugString(("Graphics::Resize: " + std::to_string(mOutputWidth) + " - " + std::to_string(mOutputHeight) + "\n").c_str());
+		if (FAILED(hr))
+		{
+			// ResizeBuffers failed; restore the old back-buffer target.
+			CreateMainRenderTarget();
+			return;
+		}
 
-	if (FAILED(hr))
-		return;
+		mOutputWidth = static_cast<int>(width);
+		mOutputHeight = static_cast<int>(height);
+		CreateMainRenderTarget();
+	}
 
-	CreateMainRenderTarget();
-	CreateDepthBuffer();
-	CreateSceneTexture();
+	if (sceneChanged)
+	{
+		ReleaseDepthBuffer();
+		ReleaseSceneTexture();
 
-	m_viewport.TopLeftX = 0.0f;
-	m_viewport.TopLeftY = 0.0f;
-	m_viewport.Width = static_cast<float>(mOutputWidth);
-	m_viewport.Height = static_cast<float>(mOutputHeight);
-	m_viewport.MinDepth = 0.0f;
-	m_viewport.MaxDepth = 1.0f;
-} // Resize
+		SceneWidth = width;
+		SceneHeight = height;
+
+		CreateDepthBuffer();
+		CreateSceneTexture();
+
+		m_viewport.TopLeftX = 0.0f;
+		m_viewport.TopLeftY = 0.0f;
+		m_viewport.Width = static_cast<float>(SceneWidth);
+		m_viewport.Height = static_cast<float>(SceneHeight);
+		m_viewport.MinDepth = 0.0f;
+		m_viewport.MaxDepth = 1.0f;
+	}
+}
 
 void Graphics::RenderFrameBegin(const ImVec4& clearColor)
 {
@@ -497,11 +519,13 @@ void Graphics::Begin() {
 		// Copy
 		UINT width = g_pendingWidth;
 		UINT height = g_pendingHeight;
+		const bool resizeScene = g_pendingSceneResize;
 
 		g_pendingWidth = 0;
 		g_pendingHeight = 0;
+		g_pendingSceneResize = false;
 
-		Resize(width, height);
+		Resize(width, height, resizeScene);
 	}
 
 	// Start a new ImGui frame
@@ -765,13 +789,18 @@ bool Graphics::IsImguiEnabled() const noexcept
 	return imguiEnabled;
 }
 
-void Graphics::OnWindowSizeChanged(int width, int height)
+void Graphics::OnWindowSizeChanged(
+	int width,
+	int height,
+	bool resizeScene
+)
 {
 	if (!hWindow)
 		return;
-	
-	g_pendingWidth = width;
-	g_pendingHeight = height;	
+
+	g_pendingWidth = static_cast<UINT>(width);
+	g_pendingHeight = static_cast<UINT>(height);
+	g_pendingSceneResize = resizeScene;
 }
 
 // - - - - Graphics exception stuff - - - -
