@@ -36,7 +36,11 @@ namespace
 	{
 		auto* app = reinterpret_cast<App*>(refData);
 
-		if (message == WM_ENTERSIZEMOVE)
+		if (message == WM_ERASEBKGND)
+		{
+			return 1; // The DX11 swap chain supplies the window contents.
+		}
+		else if (message == WM_ENTERSIZEMOVE)
 		{
 			SetTimer(hwnd, kViewportResizeTimerId, 16, nullptr);
 		}

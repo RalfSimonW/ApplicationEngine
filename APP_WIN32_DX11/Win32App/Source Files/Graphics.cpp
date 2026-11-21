@@ -440,7 +440,7 @@ void Graphics::RenderFrameEnd()
 			const bool hasResizeBorder = (style & WS_THICKFRAME) != 0;
 
 			// Inspect hwnd, style, and hasResizeBorder in the debugger.
-			OutputDebugString(("Graphics::RenderFrameEnd: " + std::to_string(hasResizeBorder) + "\n").c_str());
+			// OutputDebugString(("Graphics::RenderFrameEnd: " + std::to_string(hasResizeBorder) + "\n").c_str());
 		}
 
 		// Dear ImGui's secondary viewport rendering can change the current

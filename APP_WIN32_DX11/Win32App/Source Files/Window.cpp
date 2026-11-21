@@ -137,7 +137,7 @@ void Window::InitializeGraphics()
 
 void Window::RequestResize(UINT width, UINT height) noexcept
 {
-	// Ignore minimized/zero-sized dimensions; they are not valid ResizeBuffers sizes.
+	// Ignore minimizedzero sized dimensions. They are not valid ResizeBuffers sizes.
 	if (width == 0 || height == 0)
 		return;
 
@@ -242,7 +242,7 @@ void Window::ApplyQueuedInputToImGui()
 			break;
 
 		default:
-			break; // We’ll add keyboard, text, and focus next.
+			break; // We'll add keyboard, text, and focus next.
 		}
 	}
 }
