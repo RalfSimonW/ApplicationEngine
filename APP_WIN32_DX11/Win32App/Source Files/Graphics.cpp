@@ -290,7 +290,7 @@ void Graphics::ReleaseMainRenderTarget(){
 	cpDeviceContext->ClearState();
 
 	// Ensure queued commands are submitted before releasing resources.
-	cpDeviceContext->Flush();
+	// cpDeviceContext->Flush();
 
 	// The RTV and texture are separate COM objects referencing the same buffer.
 	cpBackBufferRTV.Reset();
