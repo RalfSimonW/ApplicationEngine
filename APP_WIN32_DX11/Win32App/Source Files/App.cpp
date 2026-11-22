@@ -91,6 +91,7 @@ void App::DoFrame()
 	light->Bind(wnd.Gfx(), cam.GetMatrix());
 
 	UpdateScene(dt);
+	DrawScene();
 	
 	// ImGui windows
 	SpawnSimulationWindow();
@@ -115,6 +116,8 @@ void App::SpawnSimulationWindow() noexcept
 	if (ImGui::Begin("Simulation Speed"))
 	{
 		ImGui::SliderFloat("Speed Factor", &speed_factor, 0.0f, 6.0f, "%.4f", ImGuiSliderFlags_Logarithmic);
+
+		// OutputDebugString(("App::SpawnSimulationWindow (spacebar pressed): " + std::to_string(wnd.kbd.KeyIsPressed(VK_SPACE)) + "\n").c_str());
 
 		ImGui::Text("%.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 		ImGui::Text("Status: %s", wnd.kbd.KeyIsPressed(VK_SPACE) ? "PAUSED" : "RUNNING (hold spacebar to pause)");
@@ -346,8 +349,17 @@ void App::UpdateScene(float dt)
 	for (auto& d : drawables)
 	{
 		d->Update(wnd.kbd.KeyIsPressed(VK_SPACE) ? 0.0f : dt); // No update while SPACE is pressed
+	}
+}
+
+void App::DrawScene()
+{
+	// Render geometry
+	for (auto& d : drawables)
+	{
 		d->Draw(wnd.Gfx());
 	}
+
 	light->Draw(wnd.Gfx());
 }
 
