@@ -2,6 +2,7 @@
 #include "Graphics.h"
 #include "GraphicsThrowMacros.h"
 #include "RedirectConsole.h"
+#include "ResizeDiag.h"
 
 
 #include "imgui_internal.h"
@@ -14,6 +15,7 @@
 #include <DirectXMath.h>
 
 #include <utility>
+#include <unordered_map>
 
 namespace wrl = Microsoft::WRL;
 namespace dx = DirectX;
@@ -450,19 +452,51 @@ void Graphics::RenderFrameEnd()
 		EnsureSecondaryViewportsAreResizable();
 		ImGui::RenderPlatformWindowsDefault();
 
+		static std::unordered_map<ImGuiID, RECT> lastRects;
+
 		const auto& viewports = ImGui::GetPlatformIO().Viewports;
 		for (int i = 1; i < viewports.Size; ++i)
 		{
 			ImGuiViewport* viewport = viewports[i];
-			if (viewport == nullptr || viewport->PlatformHandle == nullptr)
+			if (!viewport || !viewport->PlatformHandle)
 				continue;
 
-			HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
-			const LONG_PTR style = GetWindowLongPtr(hwnd, GWL_STYLE);
-			const bool hasResizeBorder = (style & WS_THICKFRAME) != 0;
+			const HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
 
-			// Inspect hwnd, style, and hasResizeBorder in the debugger.
-			// OutputDebugString(("Graphics::RenderFrameEnd: " + std::to_string(hasResizeBorder) + "\n").c_str());
+			RECT outer{};
+			RECT client{};
+			if (!GetWindowRect(hwnd, &outer) ||
+				!GetClientRect(hwnd, &client))
+			{
+				continue;
+			}
+
+			const auto previous = lastRects.find(viewport->ID);
+			const bool rectChanged =
+				previous == lastRects.end() ||
+				previous->second.left != outer.left ||
+				previous->second.top != outer.top ||
+				previous->second.right != outer.right ||
+				previous->second.bottom != outer.bottom;
+
+			if (rectChanged)
+			{
+				lastRects[viewport->ID] = outer;
+
+				ResizeDiag::Log(
+					"Platform viewport=%u logicalSize=%.1fx%.1f "
+					"hwndDpiScale=%.2f viewportDpi=%.2f "
+					"outer=(%ld,%ld %ldx%ld) client=%ldx%ld",
+					static_cast<unsigned int>(viewport->ID),
+					viewport->Size.x, viewport->Size.y,
+					DpiScale(hwnd),
+					viewport->DpiScale,
+					outer.left, outer.top,
+					outer.right - outer.left,
+					outer.bottom - outer.top,
+					client.right - client.left,
+					client.bottom - client.top);
+			}
 		}
 
 		// Dear ImGui's secondary viewport rendering can change the current
@@ -565,9 +599,29 @@ void Graphics::ShowScene()
 {
 	ImGui::Begin("Scene");
 	ImVec2 availableSize = ImGui::GetContentRegionAvail();
-	if (SceneSRV.Get())
+	if (SceneSRV.Get() && SceneWidth > 0 && SceneHeight > 0 &&
+		availableSize.x > 0.0f && availableSize.y > 0.0f)
 	{
-		ImGui::Image((ImTextureID)SceneSRV.Get(), availableSize);
+		const float width = static_cast<float>(SceneWidth);
+		const float height = static_cast<float>(SceneHeight);
+
+		const float fitScale = std::min(
+			availableSize.x / width,
+			availableSize.y / height);
+
+		// Want the scene to fill the panel instead, cap—the upscaling is then expected.
+		const float scale = std::min(fitScale, 1.0f); // Don't upscale
+		const ImVec2 imageSize(width * scale, height * scale);
+
+		const ImVec2 cursorPos = ImGui::GetCursorPos();
+		ImGui::SetCursorPos(ImVec2(
+			cursorPos.x + (availableSize.x - imageSize.x) * 0.5f,
+			cursorPos.y + (availableSize.y - imageSize.y) * 0.5f));
+
+		const ImTextureID textureId =
+			(ImTextureID)(std::intptr_t)SceneSRV.Get();
+
+		ImGui::Image(textureId, imageSize);
 	}
 
 	// Display scene size as an overlay in the bottom-right corner
