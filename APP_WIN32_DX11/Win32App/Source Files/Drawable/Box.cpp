@@ -69,7 +69,7 @@ DirectX::XMMATRIX Box::GetTransformXM() const noexcept
 	return dx::XMLoadFloat3x3(&mt) * TestObject::GetTransformXM();
 }
 
-bool /*void*/ Box::SpawnControlWindow(int id, Graphics& gfx) noexcept
+bool Box::SpawnControlWindow(int id, Graphics& gfx) noexcept
 {
 	using namespace std::string_literals;
 
@@ -84,13 +84,13 @@ bool /*void*/ Box::SpawnControlWindow(int id, Graphics& gfx) noexcept
 		dirty = cd || sid || spd;
 
 		ImGui::Text("Position");
-		ImGui::SliderFloat("R", &r, 0.0f, 80.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
-		ImGui::SliderAngle("Theta", &theta, -180.0f, 180.0f);
-		ImGui::SliderAngle("Phi", &phi, -180.0f, 180.0f);
+		ImGui::SliderFloat("R", &motion.r, 0.0f, 80.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+		ImGui::SliderAngle("Theta", &motion.theta, -180.0f, 180.0f);
+		ImGui::SliderAngle("Phi", &motion.phi, -180.0f, 180.0f);
 		ImGui::Text("Orientation");
-		ImGui::SliderAngle("Roll", &roll, -180.0f, 180.0f);
-		ImGui::SliderAngle("Pitch", &pitch, -180.0f, 180.0f);
-		ImGui::SliderAngle("Yaw", &yaw, -180.0f, 180.0f);
+		ImGui::SliderAngle("Roll", &motion.roll, -180.0f, 180.0f);
+		ImGui::SliderAngle("Pitch", &motion.pitch, -180.0f, 180.0f);
+		ImGui::SliderAngle("Yaw", &motion.yaw, -180.0f, 180.0f);
 	}
 	ImGui::End();
 

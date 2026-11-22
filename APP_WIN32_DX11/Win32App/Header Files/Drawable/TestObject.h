@@ -2,6 +2,24 @@
 #include "DrawableBase.h"
 #include "MathBase.h"
 
+struct TestObjectMotion
+{
+	float r = 0.0f;
+	float roll = 0.0f;
+	float pitch = 0.0f;
+	float yaw = 0.0f;
+	float theta = 0.0f;
+	float phi = 0.0f;
+	float chi = 0.0f;
+
+	float droll = 0.0f;
+	float dpitch = 0.0f;
+	float dyaw = 0.0f;
+	float dtheta = 0.0f;
+	float dphi = 0.0f;
+	float dchi = 0.0f;
+};
+
 template<class T>
 class TestObject : public DrawableBase<T>
 {
@@ -11,49 +29,39 @@ public:
 		std::uniform_real_distribution<float>& ddist,
 		std::uniform_real_distribution<float>& odist,
 		std::uniform_real_distribution<float>& rdist)
-		:
-		r(rdist(rng)),
-		droll(ddist(rng)),
-		dpitch(ddist(rng)),
-		dyaw(ddist(rng)),
-		dphi(odist(rng)),
-		dtheta(odist(rng)),
-		dchi(odist(rng)),
-		chi(adist(rng)),
-		theta(adist(rng)),
-		phi(adist(rng))
 	{
+		motion.r = rdist(rng);
+
+		motion.droll = ddist(rng);
+		motion.dpitch = ddist(rng);
+		motion.dyaw = ddist(rng);
+
+		motion.dphi = odist(rng);
+		motion.dtheta = odist(rng);
+		motion.dchi = odist(rng);
+
+		motion.chi = adist(rng);
+		motion.theta = adist(rng);
+		motion.phi = adist(rng);
 	}
+
 	void Update(float dt) noexcept
 	{
-		roll = wrap_angle(roll + droll * dt);
-		pitch = wrap_angle(pitch + dpitch * dt);
-		yaw = wrap_angle(yaw + dyaw * dt);
-		theta = wrap_angle(theta + dtheta * dt);
-		phi = wrap_angle(phi + dphi * dt);
-		chi = wrap_angle(chi + dchi * dt);
+		motion.roll = wrap_angle(motion.roll + motion.droll * dt);
+		motion.pitch = wrap_angle(motion.pitch + motion.dpitch * dt);
+		motion.yaw = wrap_angle(motion.yaw + motion.dyaw * dt);
+		motion.theta = wrap_angle(motion.theta + motion.dtheta * dt);
+		motion.phi = wrap_angle(motion.phi + motion.dphi * dt);
+		motion.chi = wrap_angle(motion.chi + motion.dchi * dt);
 	}
+
 	DirectX::XMMATRIX GetTransformXM() const noexcept
 	{
 		namespace dx = DirectX;
-		return dx::XMMatrixRotationRollPitchYaw(pitch, yaw, roll) *
-			dx::XMMatrixTranslation(r, 0.0f, 0.0f) *
-			dx::XMMatrixRotationRollPitchYaw(theta, phi, chi);
+		return dx::XMMatrixRotationRollPitchYaw(motion.pitch, motion.yaw, motion.roll) *
+			dx::XMMatrixTranslation(motion.r, 0.0f, 0.0f) *
+			dx::XMMatrixRotationRollPitchYaw(motion.theta, motion.phi, motion.chi);
 	}
 protected:
-	// positional
-	float r;
-	float roll = 0.0f;
-	float pitch = 0.0f;
-	float yaw = 0.0f;
-	float theta;
-	float phi;
-	float chi;
-	// speed (delta/s)
-	float droll;
-	float dpitch;
-	float dyaw;
-	float dtheta;
-	float dphi;
-	float dchi;
+	TestObjectMotion motion;
 };

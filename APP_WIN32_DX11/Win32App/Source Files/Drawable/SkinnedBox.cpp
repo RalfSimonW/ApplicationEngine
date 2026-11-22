@@ -29,9 +29,6 @@ SkinnedBox::SkinnedBox(Graphics& gfx, std::mt19937& rng,
 		model.SetNormalsIndependentFlat();
 
 		AddStaticBind(std::make_unique<Bind::VertexBuffer>(gfx, model.vertices));
-
-		//AddStaticBind(std::make_unique<Texture>(gfx, Surface::FromFile("Images\\cube.png")));
-		//AddStaticBind(std::make_unique<Bind::Texture>(gfx, Surface::FromFile("Images\\kappa50.png")));
 		AddStaticBind(std::make_unique<Bind::Texture>(gfx, Surface::FromFile("Images\\TKSelfie.png")));
 		AddStaticBind(std::make_unique<Bind::Sampler>(gfx));
 
@@ -40,8 +37,6 @@ SkinnedBox::SkinnedBox(Graphics& gfx, std::mt19937& rng,
 		auto pvsbc = pvs->GetBytecode();
 		AddStaticBind(std::move(pvs));
 
-
-		//AddStaticBind(std::make_unique<PixelShader>(gfx, L"TexturePS.cso"));
 		AddStaticBind(std::make_unique<Bind::PixelShader>(gfx, L"TexturedPhongPS.cso"));
 
 		AddStaticIndexBuffer(std::make_unique<Bind::IndexBuffer>(gfx, model.indices));
