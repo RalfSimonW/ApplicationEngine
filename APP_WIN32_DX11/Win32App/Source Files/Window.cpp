@@ -231,20 +231,58 @@ void Window::ApplyQueuedInputToImGui()
 			{
 			case WM_KEYDOWN:
 			case WM_SYSKEYDOWN:
-				if (!imguiWantsKeyboard.load(std::memory_order_relaxed) &&
-					(!(event.lParam & 0x40000000) || kbd.AutorepeatIsEnabled()))
+			{
+				const bool isSpace = event.wParam == VK_SPACE;
+				const bool wantsKeyboard =
+					imguiWantsKeyboard.load(std::memory_order_relaxed);
+				const bool textInputActive =
+					imguiWantsTextInput.load(std::memory_order_relaxed);
+				const bool itemActive =
+					imguiHasActiveItem.load(std::memory_order_relaxed);
+
+				const bool allowAppKey = !wantsKeyboard ||
+					(isSpace && !textInputActive && !itemActive);
+
+				const bool isRepeat = (event.lParam & 0x40000000) != 0;
+				if (allowAppKey &&
+					(!isRepeat || kbd.AutorepeatIsEnabled()))
 				{
-					kbd.OnKeyPressed(static_cast<unsigned char>(event.wParam));
+					kbd.OnKeyPressed(
+						static_cast<unsigned char>(event.wParam));
+
+					if (isSpace)
+						spaceForwardedToApp = true;
 				}
 				break;
+			}
 
 			case WM_KEYUP:
 			case WM_SYSKEYUP:
-				if (!imguiWantsKeyboard.load(std::memory_order_relaxed))
+			{
+				const bool isSpace = event.wParam == VK_SPACE;
+				const bool wantsKeyboard =
+					imguiWantsKeyboard.load(std::memory_order_relaxed);
+				const bool textInputActive =
+					imguiWantsTextInput.load(std::memory_order_relaxed);
+				const bool itemActive =
+					imguiHasActiveItem.load(std::memory_order_relaxed);
+
+				const bool allowAppKey = !wantsKeyboard ||
+					(isSpace && !textInputActive && !itemActive);
+
+				const bool allowSpaceRelease =
+					isSpace && spaceForwardedToApp;
+
+				if (allowAppKey || allowSpaceRelease)
 				{
-					kbd.OnKeyReleased(static_cast<unsigned char>(event.wParam));
+					kbd.OnKeyReleased(
+						static_cast<unsigned char>(event.wParam));
+
+					if (isSpace)
+						spaceForwardedToApp = false;
 				}
 				break;
+			}
 
 			case WM_CHAR:
 				if (!imguiWantsKeyboard.load(std::memory_order_relaxed))
@@ -255,6 +293,7 @@ void Window::ApplyQueuedInputToImGui()
 
 			case WM_KILLFOCUS:
 				kbd.ClearState();
+				spaceForwardedToApp = false;
 				break;
 			}
 
