@@ -167,6 +167,12 @@ private:
 	std::atomic<int> pendingImGuiNoMouse{ -1 }; // -1 = no change, 0 = allow mouse, 1 = disable mouse
 	std::atomic<int> imguiMouseCursor{ 0 }; // ImGuiMouseCursor_Arrow
 
+	std::atomic<bool> imguiWantsTextInput{ false };
+	std::atomic<bool> imguiHasActiveItem{ false };
+
+	// Accessed by the render thread while queued input is applied.
+	bool spaceForwardedToApp = false;
+
 	std::mutex inputMutex;
 	std::deque<InputEvent> pendingInput;
 

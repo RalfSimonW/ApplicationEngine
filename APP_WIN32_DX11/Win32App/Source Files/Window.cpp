@@ -1,6 +1,7 @@
 #include "Window.h"
 #include "WindowsMessageMap.h"
 #include "spdlog.h"
+#include "ResizeDiag.h"
 #include "WindowsThrowMacros.h"
 #include "imgui_impl_win32.h"
 
@@ -167,10 +168,26 @@ void Window::PublishImGuiCaptureState()
 {
 	const ImGuiIO& io = ImGui::GetIO();
 
+	static bool lastWantCaptureKeyboard = false;
+
+	if (io.WantCaptureKeyboard != lastWantCaptureKeyboard)
+	{
+		ResizeDiag::Log(
+			"ImGui keyboard capture changed: want=%d text=%d activeItem=%d",
+			io.WantCaptureKeyboard ? 1 : 0,
+			io.WantTextInput ? 1 : 0,
+			ImGui::IsAnyItemActive() ? 1 : 0);
+
+		lastWantCaptureKeyboard = io.WantCaptureKeyboard;
+	}
+
 	imguiWantsMouse.store(io.WantCaptureMouse, std::memory_order_relaxed);
 	imguiWantsKeyboard.store(io.WantCaptureKeyboard, std::memory_order_relaxed);
 	imguiItemHovered.store(ImGui::IsAnyItemHovered(), std::memory_order_relaxed);
 	imguiMouseCursor.store(static_cast<int>(ImGui::GetMouseCursor()), std::memory_order_relaxed);
+
+	imguiWantsTextInput.store(io.WantTextInput, std::memory_order_relaxed);
+	imguiHasActiveItem.store(ImGui::IsAnyItemActive(), std::memory_order_relaxed);
 
 }
 
@@ -240,6 +257,18 @@ void Window::ApplyQueuedInputToImGui()
 				kbd.ClearState();
 				break;
 			}
+
+			if (event.wParam == VK_SPACE &&
+				(event.message == WM_KEYDOWN || event.message == WM_SYSKEYDOWN ||
+					event.message == WM_KEYUP || event.message == WM_SYSKEYUP))
+			{
+				ResizeDiag::Log(
+					"ApplyQueuedInputToImGui Space message=%u capture=%d pressed=%d",
+					static_cast<unsigned int>(event.message),
+					imguiWantsKeyboard.load(std::memory_order_relaxed) ? 1 : 0,
+					kbd.KeyIsPressed(VK_SPACE) ? 1 : 0);
+			}
+
 			break;
 
 		default:
@@ -541,6 +570,15 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	case WM_SETFOCUS:
 	case WM_KILLFOCUS:
 	{
+		if (wParam == VK_SPACE &&
+			(msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN ||
+				msg == WM_KEYUP || msg == WM_SYSKEYUP))
+		{
+			ResizeDiag::Log(
+				"Window::HandleMsg Space message=%u",
+				static_cast<unsigned int>(msg));
+		}
+
 		InputEvent event{};
 		event.type = InputEvent::Type::Win32KeyboardMessage;
 		event.message = msg;
