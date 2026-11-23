@@ -448,7 +448,9 @@ void Graphics::RenderFrameEnd()
 
 	if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
 	{
+
 		ImGui::UpdatePlatformWindows();
+
 		EnsureSecondaryViewportsAreResizable();
 		ImGui::RenderPlatformWindowsDefault();
 
@@ -512,11 +514,21 @@ void Graphics::RenderFrameEnd()
 					outer.bottom - outer.top,
 					client.right - client.left,
 					client.bottom - client.top);
+
+				// Separate call: these format specifiers match these arguments only.
+				ResizeDiag::Log(
+					"DPI scales: mainHwnd=%.2f mainViewport=%.2f "
+					"floatingHwnd=%.2f floatingViewport=%.2f configScaleViewports=%d",
+					mainHwnd ? DpiScale(mainHwnd) : 0.0f,
+					mainViewport ? mainViewport->DpiScale : 0.0f,
+					DpiScale(hwnd),
+					viewport->DpiScale,
+					static_cast<int>(io.ConfigDpiScaleViewports));
 			}
 		}
 
-		// Dear ImGui's secondary viewport rendering can change the current
-		// D3D11 render state. Restore the main target for safety.
+		// Dear ImGui's secondary viewport rendering can change the current D3D11 render state.
+		// Restore the main target for safety.
 		cpDeviceContext->OMSetRenderTargets(
 			1,
 			cpBackBufferRTV.GetAddressOf(),
@@ -671,7 +683,7 @@ void Graphics::ShowScene()
 
 void Graphics::DrawCustomTitleAndMenuAboveDockSpace()
 {
-	//const float dpiScale = DpiScale(hWindow);
+	// const float dpiScale = DpiScale(hWindow);
 	// OutputDebugString((std::to_string(dpiScale) + "\n").c_str());
 
 	ImGuiViewport* mainViewport = ImGui::GetMainViewport();
