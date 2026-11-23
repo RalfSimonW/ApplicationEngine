@@ -130,6 +130,15 @@ static float DpiScale(HWND hwnd) noexcept
 
 static void EnsureSecondaryViewportsAreResizable()
 {
+	using AdjustWindowRectExForDpiFn =
+		BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+
+	static const auto adjustForDpi =
+		reinterpret_cast<AdjustWindowRectExForDpiFn>(
+			GetProcAddress(
+				GetModuleHandleW(L"user32.dll"),
+				"AdjustWindowRectExForDpi"));
+
 	ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
 
 	for (int i = 1; i < platformIO.Viewports.Size; ++i)
@@ -138,20 +147,66 @@ static void EnsureSecondaryViewportsAreResizable()
 		if (viewport == nullptr || viewport->PlatformHandle == nullptr)
 			continue;
 
+		const int targetWidth =
+			static_cast<int>(std::lround(viewport->Size.x));
+		const int targetHeight =
+			static_cast<int>(std::lround(viewport->Size.y));
+		if (targetWidth <= 0 || targetHeight <= 0)
+			continue;
+
 		HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
-		LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+		const LONG_PTR oldStyle = GetWindowLongPtrW(hwnd, GWL_STYLE);
+		const LONG_PTR newStyle = oldStyle | WS_THICKFRAME;
+		const bool styleChanged = (oldStyle != newStyle);
 
-		if ((style & WS_THICKFRAME) == 0)
+		RECT client{};
+		if (!GetClientRect(hwnd, &client))
+			continue;
+
+		const int clientWidth = client.right - client.left;
+		const int clientHeight = client.bottom - client.top;
+
+		// Nothing to do if the style and client dimensions are already right.
+		if (!styleChanged &&
+			clientWidth == targetWidth &&
+			clientHeight == targetHeight)
 		{
-			SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME);
-
-			SetWindowPos(
-				hwnd,
-				nullptr,
-				0, 0, 0, 0,
-				SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
-				SWP_NOACTIVATE | SWP_FRAMECHANGED);
+			continue;
 		}
+
+		if (styleChanged)
+		{
+			SetLastError(ERROR_SUCCESS);
+			SetWindowLongPtrW(hwnd, GWL_STYLE, newStyle);
+			if (GetLastError() != ERROR_SUCCESS)
+				continue;
+		}
+
+		// Compute the outer size required for the desired client size.
+		RECT outer{ 0, 0, targetWidth, targetHeight };
+		const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+		const UINT dpi =
+			static_cast<UINT>(std::lround(DpiScale(hwnd) * 96.0f));
+
+		const BOOL adjusted = adjustForDpi
+			? adjustForDpi(
+				&outer, static_cast<DWORD>(newStyle), FALSE,
+				static_cast<DWORD>(exStyle), dpi)
+			: AdjustWindowRectEx(
+				&outer, static_cast<DWORD>(newStyle), FALSE,
+				static_cast<DWORD>(exStyle));
+
+		if (!adjusted)
+			continue;
+
+		SetWindowPos(
+			hwnd,
+			nullptr,
+			0, 0,
+			outer.right - outer.left,
+			outer.bottom - outer.top,
+			SWP_NOMOVE | SWP_NOZORDER |
+			SWP_NOACTIVATE | SWP_FRAMECHANGED);
 	}
 }
 
