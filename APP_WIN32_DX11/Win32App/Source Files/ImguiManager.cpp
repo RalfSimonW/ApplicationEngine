@@ -10,6 +10,7 @@ ImguiManager::ImguiManager()
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
 	io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;       // Enable Multi-Viewport / Platform Windows
+	io.ConfigDpiScaleViewports = true;
 
 	io.Fonts->AddFontFromFileTTF("Assets/fonts/opensans/OpenSans-Bold.ttf", 12.0f);
 	io.FontDefault = io.Fonts->AddFontFromFileTTF("Assets/fonts/opensans/OpenSans-Regular.ttf", 12.0f);
