@@ -20,6 +20,43 @@
 namespace wrl = Microsoft::WRL;
 namespace dx = DirectX;
 
+static void SetSecondaryViewportFramebufferScales()
+{
+	ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+	ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
+
+	for (int i = 0; i < platformIO.Viewports.Size; ++i)
+	{
+		ImGuiViewport* viewport = platformIO.Viewports[i];
+
+		// Leave the main viewport at its existing 1.50 scale.
+		if (viewport == mainViewport || viewport->DrawData == nullptr)
+			continue;
+
+		ImDrawData* drawData = viewport->DrawData;
+		if (drawData->DisplaySize.x <= 0.0f ||
+			drawData->DisplaySize.y <= 0.0f)
+			continue;
+
+		HWND hwnd = reinterpret_cast<HWND>(viewport->PlatformHandle);
+		if (hwnd == nullptr)
+			continue;
+
+		RECT clientRect{};
+		if (!GetClientRect(hwnd, &clientRect))
+			continue;
+
+		const float clientWidth =
+			static_cast<float>(clientRect.right - clientRect.left);
+		const float clientHeight =
+			static_cast<float>(clientRect.bottom - clientRect.top);
+
+		drawData->FramebufferScale = ImVec2(
+			clientWidth / drawData->DisplaySize.x,
+			clientHeight / drawData->DisplaySize.y);
+	}
+}
+
 static void LogViewportScaleDiagnostic()
 {
 	using Clock = std::chrono::steady_clock;
@@ -76,7 +113,6 @@ static void LogViewportScaleDiagnostic()
 			ratioY);
 	}
 }
-
 
 static float DpiScale(HWND hwnd) noexcept
 {
@@ -508,7 +544,7 @@ void Graphics::RenderFrameEnd()
 	{
 
 		ImGui::UpdatePlatformWindows();
-
+		SetSecondaryViewportFramebufferScales();
 		LogViewportScaleDiagnostic();
 
 		EnsureSecondaryViewportsAreResizable();
