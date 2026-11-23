@@ -93,6 +93,8 @@ public:
 	Window& operator=(const Window&) = delete;
 
 	void InitializeGraphics();
+	HWND GetHandle() const noexcept { return hWnd; }
+
 	void RequestResize(UINT width, UINT height, bool resizeScene) noexcept;
 	void ApplyPendingResize();
 	void PublishImGuiCaptureState();

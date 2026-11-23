@@ -19,7 +19,40 @@
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
 
+#include "ResizeDiag.h"
+
 #pragma comment(lib, "Comctl32.lib")
+
+namespace
+{
+	bool SetThreadDpiContextToMatchWindow(HWND hwnd) noexcept
+	{
+		using GetWindowDpiContextFn = HANDLE(WINAPI*)(HWND);
+		using SetThreadDpiContextFn = HANDLE(WINAPI*)(HANDLE);
+
+		HMODULE user32 = GetModuleHandleW(L"user32.dll");
+		if (!user32 || !hwnd)
+			return false;
+
+		const auto getWindowContext =
+			reinterpret_cast<GetWindowDpiContextFn>(
+				GetProcAddress(user32, "GetWindowDpiAwarenessContext"));
+		const auto setThreadContext =
+			reinterpret_cast<SetThreadDpiContextFn>(
+				GetProcAddress(user32, "SetThreadDpiAwarenessContext"));
+
+		if (!getWindowContext || !setThreadContext)
+			return false;
+
+		const HANDLE mainWindowContext = getWindowContext(hwnd);
+		if (!mainWindowContext)
+			return false;
+
+		// A non-null return means the context change succeeded.
+		// Keep this context for the render thread's lifetime.
+		return setThreadContext(mainWindowContext) != nullptr;
+	}
+}
 
 namespace
 {
@@ -282,6 +315,9 @@ void App::ShutdownRenderResources()
 
 void App::RenderThreadMain()
 {
+	const bool dpiContextSet = SetThreadDpiContextToMatchWindow(wnd.GetHandle());
+	ResizeDiag::Log("Render-thread DPI context matched to main window: %d",	dpiContextSet ? 1 : 0);
+
 	try
 	{
 		InitializeRenderResources();
