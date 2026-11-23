@@ -483,14 +483,30 @@ void Graphics::RenderFrameEnd()
 			{
 				lastRects[viewport->ID] = outer;
 
+				ImGuiViewport* mainViewport = ImGui::GetMainViewport();
+				const HWND mainHwnd =
+					(mainViewport && mainViewport->PlatformHandle)
+					? static_cast<HWND>(mainViewport->PlatformHandle)
+					: nullptr;
+
+				const float mainHwndDpiScale =
+					mainHwnd ? DpiScale(mainHwnd) : 0.0f;
+				const float mainViewportDpi =
+					mainViewport ? mainViewport->DpiScale : 0.0f;
+
 				ResizeDiag::Log(
 					"Platform viewport=%u logicalSize=%.1fx%.1f "
-					"hwndDpiScale=%.2f viewportDpi=%.2f "
+					"mainHwndDpiScale=%.2f mainViewportDpi=%.2f "
+					"floatingHwndDpiScale=%.2f floatingViewportDpi=%.2f "
+					"scaleViewports=%d "
 					"outer=(%ld,%ld %ldx%ld) client=%ldx%ld",
 					static_cast<unsigned int>(viewport->ID),
 					viewport->Size.x, viewport->Size.y,
+					mainHwndDpiScale,
+					mainViewportDpi,
 					DpiScale(hwnd),
 					viewport->DpiScale,
+					io.ConfigDpiScaleViewports ? 1 : 0,
 					outer.left, outer.top,
 					outer.right - outer.left,
 					outer.bottom - outer.top,
