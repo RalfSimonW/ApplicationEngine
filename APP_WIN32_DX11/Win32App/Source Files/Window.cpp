@@ -632,7 +632,7 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	case WM_MOUSEMOVE:
 	{
 		UpdateWindowDrag();
-	
+
 		const POINTS pt = MAKEPOINTS(lParam);
 
 		// Cursorless exclusive gets first dibs
@@ -647,17 +647,23 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 			break;
 		}
 
-		InputEvent event{};
-		event.type = InputEvent::Type::MousePosition;
-		event.x = static_cast<float>(pt.x);
-		event.y = static_cast<float>(pt.y);
-		QueueInputEvent(event);
-		
+		// ImGui multi-viewport mouse positions are screen coordinates.
+		POINT screenPt{ pt.x, pt.y };
+		if (ClientToScreen(hWnd, &screenPt))
+		{
+			InputEvent event{};
+			event.type = InputEvent::Type::MousePosition;
+			event.x = static_cast<float>(screenPt.x);
+			event.y = static_cast<float>(screenPt.y);
+			QueueInputEvent(event);
+		}
+
 		if (!imguiWantsMouse.load(std::memory_order_relaxed))
 		{
 			break;
 		}
-		// In client region -> log move, and log enter + capture mouse (if not previously in window)
+
+		// Keep the app's mouse handling in client coordinates.
 		if (pt.x >= 0 && pt.x < width && pt.y >= 0 && pt.y < height)
 		{
 			mouse.OnMouseMove(pt.x, pt.y);
@@ -683,6 +689,7 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 		}
 		break;
 	}
+
 	case WM_LBUTTONDOWN:
 	{
 		mouseY = static_cast<int>(HIWORD(lParam));

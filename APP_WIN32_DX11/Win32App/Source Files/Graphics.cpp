@@ -20,6 +20,64 @@
 namespace wrl = Microsoft::WRL;
 namespace dx = DirectX;
 
+static void LogViewportScaleDiagnostic()
+{
+	using Clock = std::chrono::steady_clock;
+
+	static Clock::time_point lastLog{};
+	const auto now = Clock::now();
+
+	// Avoid flooding the log.
+	if (now - lastLog < std::chrono::milliseconds(500))
+		return;
+
+	lastLog = now;
+
+	ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
+
+	for (int i = 0; i < platformIO.Viewports.Size; ++i)
+	{
+		ImGuiViewport* viewport = platformIO.Viewports[i];
+		ImDrawData* drawData = viewport->DrawData;
+		HWND hwnd = reinterpret_cast<HWND>(viewport->PlatformHandle);
+
+		if (hwnd == nullptr || drawData == nullptr)
+			continue;
+
+		RECT clientRect{};
+		if (!GetClientRect(hwnd, &clientRect))
+			continue;
+
+		const LONG clientWidth = clientRect.right - clientRect.left;
+		const LONG clientHeight = clientRect.bottom - clientRect.top;
+
+		const float ratioX = drawData->DisplaySize.x > 0.0f
+			? static_cast<float>(clientWidth) / drawData->DisplaySize.x
+			: 0.0f;
+
+		const float ratioY = drawData->DisplaySize.y > 0.0f
+			? static_cast<float>(clientHeight) / drawData->DisplaySize.y
+			: 0.0f;
+
+		ResizeDiag::Log(
+			"Viewport scale: id=%u hwnd=%p dpi=%.2f "
+			"client=%ldx%ld display=%.1fx%.1f "
+			"fbScale=%.2fx%.2f client/display=%.2fx%.2f",
+			static_cast<unsigned>(viewport->ID),
+			hwnd,
+			viewport->DpiScale,
+			clientWidth,
+			clientHeight,
+			drawData->DisplaySize.x,
+			drawData->DisplaySize.y,
+			drawData->FramebufferScale.x,
+			drawData->FramebufferScale.y,
+			ratioX,
+			ratioY);
+	}
+}
+
+
 static float DpiScale(HWND hwnd) noexcept
 {
 	using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
@@ -450,6 +508,8 @@ void Graphics::RenderFrameEnd()
 	{
 
 		ImGui::UpdatePlatformWindows();
+
+		LogViewportScaleDiagnostic();
 
 		EnsureSecondaryViewportsAreResizable();
 		ImGui::RenderPlatformWindowsDefault();
