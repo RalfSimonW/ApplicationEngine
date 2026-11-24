@@ -509,6 +509,8 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	static bool s_minimized = false;
 	static int mouseY = 0;
 
+	const auto sizeEvent = ++ResizeDiag::wmSizeCount;
+
 	switch (msg)
 	{
 	case WM_NCCALCSIZE:
@@ -522,6 +524,15 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	case WM_SIZE:
 		sWidth = static_cast<UINT>(LOWORD(lParam));
 		sHeight = static_cast<UINT>(HIWORD(lParam));
+#if RESIZE_DIAG_ENABLED		
+		ResizeDiag::Log(
+			"WM_SIZE #%llu hwnd=%p size=%ux%u wParam=%llu",
+			sizeEvent,
+			hWnd,
+			static_cast<unsigned>(sWidth),
+			static_cast<unsigned>(sHeight),
+			static_cast<unsigned long long>(wParam));
+#endif
 		RequestResize(sWidth, sHeight, !inSizemove);
 
 		break;
