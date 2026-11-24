@@ -15,6 +15,8 @@
 #include <DirectXMath.h>
 
 #include <utility>
+#include <cmath>
+#include <unordered_set>
 #include <unordered_map>
 
 namespace wrl = Microsoft::WRL;
@@ -130,6 +132,18 @@ static float DpiScale(HWND hwnd) noexcept
 
 static void EnsureSecondaryViewportsAreResizable()
 {
+	static std::unordered_set<HWND> correctedViewports;
+
+	// Remove handles for secondary windows that have been destroyed.
+	for (auto it = correctedViewports.begin();
+		it != correctedViewports.end();)
+	{
+		if (!IsWindow(*it))
+			it = correctedViewports.erase(it);
+		else
+			++it;
+	}
+
 	using AdjustWindowRectExForDpiFn =
 		BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
 
@@ -147,14 +161,19 @@ static void EnsureSecondaryViewportsAreResizable()
 		if (viewport == nullptr || viewport->PlatformHandle == nullptr)
 			continue;
 
+		HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
+
+		if (correctedViewports.find(hwnd) != correctedViewports.end())
+			continue;
+
 		const int targetWidth =
 			static_cast<int>(std::lround(viewport->Size.x));
 		const int targetHeight =
 			static_cast<int>(std::lround(viewport->Size.y));
+
 		if (targetWidth <= 0 || targetHeight <= 0)
 			continue;
 
-		HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
 		const LONG_PTR oldStyle = GetWindowLongPtrW(hwnd, GWL_STYLE);
 		const LONG_PTR newStyle = oldStyle | WS_THICKFRAME;
 		const bool styleChanged = (oldStyle != newStyle);
@@ -166,11 +185,12 @@ static void EnsureSecondaryViewportsAreResizable()
 		const int clientWidth = client.right - client.left;
 		const int clientHeight = client.bottom - client.top;
 
-		// Nothing to do if the style and client dimensions are already right.
+		// This viewport already has the desired style and client size.
 		if (!styleChanged &&
 			clientWidth == targetWidth &&
 			clientHeight == targetHeight)
 		{
+			correctedViewports.insert(hwnd);
 			continue;
 		}
 
@@ -178,11 +198,13 @@ static void EnsureSecondaryViewportsAreResizable()
 		{
 			SetLastError(ERROR_SUCCESS);
 			SetWindowLongPtrW(hwnd, GWL_STYLE, newStyle);
+
 			if (GetLastError() != ERROR_SUCCESS)
 				continue;
 		}
 
-		// Compute the outer size required for the desired client size.
+		// viewport->Size is the desired client size. Calculate the outer
+		// dimensions needed to produce that client size with this window style.
 		RECT outer{ 0, 0, targetWidth, targetHeight };
 		const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
 		const UINT dpi =
@@ -190,16 +212,21 @@ static void EnsureSecondaryViewportsAreResizable()
 
 		const BOOL adjusted = adjustForDpi
 			? adjustForDpi(
-				&outer, static_cast<DWORD>(newStyle), FALSE,
-				static_cast<DWORD>(exStyle), dpi)
+				&outer,
+				static_cast<DWORD>(newStyle),
+				FALSE, // These ImGui viewport windows have no menu.
+				static_cast<DWORD>(exStyle),
+				dpi)
 			: AdjustWindowRectEx(
-				&outer, static_cast<DWORD>(newStyle), FALSE,
+				&outer,
+				static_cast<DWORD>(newStyle),
+				FALSE,
 				static_cast<DWORD>(exStyle));
 
 		if (!adjusted)
 			continue;
 
-		SetWindowPos(
+		const BOOL positioned = SetWindowPos(
 			hwnd,
 			nullptr,
 			0, 0,
@@ -207,8 +234,27 @@ static void EnsureSecondaryViewportsAreResizable()
 			outer.bottom - outer.top,
 			SWP_NOMOVE | SWP_NOZORDER |
 			SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+		if (!positioned)
+		{
+			if (styleChanged)
+			{
+				SetWindowLongPtrW(hwnd, GWL_STYLE, oldStyle);
+				SetWindowPos(
+					hwnd,
+					nullptr,
+					0, 0, 0, 0,
+					SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+					SWP_NOACTIVATE | SWP_FRAMECHANGED);
+			}
+
+			continue;
+		}
+
+		correctedViewports.insert(hwnd);
 	}
 }
+
 
 static ImVec2 previousSize(-1.0f, -1.0f);
 
@@ -599,10 +645,11 @@ void Graphics::RenderFrameEnd()
 	{
 
 		ImGui::UpdatePlatformWindows();
+		
+		EnsureSecondaryViewportsAreResizable();
 		SetSecondaryViewportFramebufferScales();
 		LogViewportScaleDiagnostic();
-
-		EnsureSecondaryViewportsAreResizable();
+				
 		ImGui::RenderPlatformWindowsDefault();
 
 		static std::unordered_map<ImGuiID, RECT> lastRects;
