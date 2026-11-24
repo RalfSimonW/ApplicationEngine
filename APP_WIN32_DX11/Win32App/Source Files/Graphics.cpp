@@ -536,6 +536,15 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 	{
 		ReleaseMainRenderTarget();
 
+#if RESIZE_DIAG_ENABLED
+		ResizeDiag::Log(
+			"ResizeBuffers requested=%ux%u oldOutput=%dx%d",
+			width,
+			height,
+			mOutputWidth,
+			mOutputHeight);
+#endif
+
 		HRESULT hr = cpSwapChain->ResizeBuffers(
 			0,
 			width,
@@ -546,6 +555,13 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 
 		if (FAILED(hr))
 		{
+#if RESIZE_DIAG_ENABLED
+			ResizeDiag::Log(
+				"ResizeBuffers FAILED size=%ux%u hr=0x%08X",
+				width,
+				height,
+				static_cast<unsigned int>(hr));
+#endif
 			// ResizeBuffers failed; restore the old back-buffer target.
 			CreateMainRenderTarget();
 			return;
@@ -554,10 +570,29 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 		mOutputWidth = static_cast<int>(width);
 		mOutputHeight = static_cast<int>(height);
 		CreateMainRenderTarget();
+
+#if RESIZE_DIAG_ENABLED
+		D3D11_TEXTURE2D_DESC backBufferDesc{};
+		cpBackBufferSceneTexture->GetDesc(&backBufferDesc);
+		ResizeDiag::Log(
+			"BackBuffer actual=%ux%u",
+			backBufferDesc.Width,
+			backBufferDesc.Height);
+#endif
 	}
 
 	if (sceneChanged)
 	{
+
+#if RESIZE_DIAG_ENABLED
+		ResizeDiag::Log(
+			"SceneTargets resize old=%ux%u new=%ux%u",
+			SceneWidth,
+			SceneHeight,
+			width,
+			height);
+#endif
+
 		ReleaseDepthBuffer();
 		ReleaseSceneTexture();
 
@@ -566,6 +601,21 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 
 		CreateDepthBuffer();
 		CreateSceneTexture();
+
+#if RESIZE_DIAG_ENABLED
+		D3D11_TEXTURE2D_DESC sceneDesc{};
+		m_sceneTexture->GetDesc(&sceneDesc);
+
+		D3D11_TEXTURE2D_DESC depthDesc{};
+		cpDepthBuffer->GetDesc(&depthDesc);
+
+		ResizeDiag::Log(
+			"SceneTargets ready scene=%ux%u depth=%ux%u",
+			sceneDesc.Width,
+			sceneDesc.Height,
+			depthDesc.Width,
+			depthDesc.Height);
+#endif
 
 		m_viewport.TopLeftX = 0.0f;
 		m_viewport.TopLeftY = 0.0f;
@@ -784,6 +834,14 @@ void Graphics::Begin() {
 		g_pendingWidth = 0;
 		g_pendingHeight = 0;
 		g_pendingSceneResize = false;
+
+#if RESIZE_DIAG_ENABLED
+		ResizeDiag::Log(
+			"Graphics::Begin applying pending size=%ux%u resizeScene=%d",
+			width,
+			height,
+			resizeScene ? 1 : 0);
+#endif
 
 		Resize(width, height, resizeScene);
 	}

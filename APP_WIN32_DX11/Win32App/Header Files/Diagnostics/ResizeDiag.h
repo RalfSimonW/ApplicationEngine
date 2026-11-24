@@ -349,5 +349,21 @@ namespace ResizeDiag
 
 		LogStats();
 	}
+
+	inline void TraceSize(const char* stage, HWND hwnd, UINT width, UINT height)
+	{
+		char line[256];
+		sprintf_s(
+			line,
+			"[ResizeDiag %llu ms TID %lu] %s hwnd=%p size=%ux%u\n",
+			GetTickCount64(),
+			GetCurrentThreadId(),
+			stage,
+			hwnd,
+			width,
+			height);
+
+		OutputDebugStringA(line);
+	}
 }
 #endif

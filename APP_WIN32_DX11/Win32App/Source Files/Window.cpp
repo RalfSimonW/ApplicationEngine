@@ -157,6 +157,15 @@ void Window::ApplyPendingResize()
 	if (request.width == 0 || request.height == 0 || !pGfx)
 		return;
 
+#if RESIZE_DIAG_ENABLED
+	ResizeDiag::Log(
+		"ApplyPendingResize consumed hwnd=%p size=%ux%u resizeScene=%d",
+		hWnd,
+		request.width,
+		request.height,
+		request.resizeScene ? 1 : 0);
+#endif
+
 	pGfx->OnWindowSizeChanged(
 		static_cast<int>(request.width),
 		static_cast<int>(request.height),
