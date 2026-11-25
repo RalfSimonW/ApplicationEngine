@@ -537,10 +537,11 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 		ReleaseMainRenderTarget();
 
 #if RESIZE_DIAG_ENABLED
+		const uint64_t resizeSession = ResizeDiag::ActiveMeasurementSession();
 		const auto resizeStart = std::chrono::steady_clock::now();
 #endif
 
-		HRESULT hr = cpSwapChain->ResizeBuffers(
+		const HRESULT hr = cpSwapChain->ResizeBuffers(
 			0,
 			width,
 			height,
@@ -554,6 +555,12 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 				std::chrono::steady_clock::now() - resizeStart
 			).count();
 
+		ResizeDiag::RecordResizeBuffersTiming(
+			resizeSession,
+			SUCCEEDED(hr),
+			static_cast<unsigned long long>(resizeDurationUs)
+		);
+
 		ResizeDiag::Log(
 			"ResizeBuffers duration=%llu us success=%d size=%ux%u",
 			static_cast<unsigned long long>(resizeDurationUs),
@@ -562,36 +569,21 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 			height);
 #endif
 
-//#if RESIZE_DIAG_ENABLED
-//		ResizeDiag::Log(
-//			"ResizeBuffers requested=%ux%u oldOutput=%dx%d",
-//			width,
-//			height,
-//			mOutputWidth,
-//			mOutputHeight);
-//#endif
-//
-//		HRESULT hr = cpSwapChain->ResizeBuffers(
-//			0,
-//			width,
-//			height,
-//			DXGI_FORMAT_UNKNOWN,
-//			0
-//		);
-//
-//		if (FAILED(hr))
-//		{
-//#if RESIZE_DIAG_ENABLED
-//			ResizeDiag::Log(
-//				"ResizeBuffers FAILED size=%ux%u hr=0x%08X",
-//				width,
-//				height,
-//				static_cast<unsigned int>(hr));
-//#endif
-//			// ResizeBuffers failed; restore the old back-buffer target.
-//			CreateMainRenderTarget();
-//			return;
-//		}
+		if (FAILED(hr))
+		{
+#if RESIZE_DIAG_ENABLED
+			ResizeDiag::Log(
+				"ResizeBuffers FAILED hr=0x%08X requested=%ux%u; restoring old target",
+				static_cast<unsigned int>(hr),
+				width,
+				height);
+#endif
+
+			// ResizeBuffers failed: keep the old dimensions and reacquire the
+			// still-valid swap-chain back buffer.
+			CreateMainRenderTarget();
+			return;
+		}
 
 		mOutputWidth = static_cast<int>(width);
 		mOutputHeight = static_cast<int>(height);
@@ -811,12 +803,22 @@ void Graphics::RenderFrameEnd()
 	}
 }
 
-void Graphics::Present(bool vsync) {
+void Graphics::Present(bool vsync)
+{
+	const auto start = std::chrono::steady_clock::now();
+
 	cpSwapChain->Present(
 		vsync ? 1 : 0,
 		0
 	);
-} // Present
+
+	m_lastPresentDurationUs =
+		static_cast<unsigned long long>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - start
+			).count()
+			);
+}
 
 void Graphics::Shutdown() {
 	if (!cpDeviceContext)

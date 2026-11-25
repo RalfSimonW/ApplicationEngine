@@ -106,6 +106,12 @@ public:
 	void EnableImgui() noexcept;
 	void DisableImgui() noexcept;
 	bool IsImguiEnabled() const noexcept;
+
+	unsigned long long LastPresentDurationUs() const noexcept
+	{
+		return m_lastPresentDurationUs;
+	}
+
 private:
 	DirectX::XMMATRIX projection;
 	DirectX::XMMATRIX camera;
@@ -162,5 +168,7 @@ private:
 
 	std::chrono::steady_clock::time_point m_lastInteractiveResizeApply{};
 	bool m_hasInteractiveResizeApplied = false;
+
+	unsigned long long m_lastPresentDurationUs = 0;
 
 };

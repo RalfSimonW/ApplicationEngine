@@ -81,6 +81,13 @@ App::~App()
 
 void App::DoFrame()
 {
+#if RESIZE_DIAG_ENABLED
+	using Clock = std::chrono::steady_clock;
+
+	const auto frameStart = Clock::now();
+	const uint64_t session = ResizeDiag::ActiveMeasurementSession();
+#endif
+
 	wnd.ApplyPendingResize();
 	wnd.ApplyQueuedInputToImGui();
 
@@ -110,6 +117,31 @@ void App::DoFrame()
     wnd.Gfx().End();
 
 	InstallViewportSizingCallbacks();
+
+#if RESIZE_DIAG_ENABLED
+	if (session != 0)
+	{
+		const auto frameUs =
+			static_cast<unsigned long long>(
+				std::chrono::duration_cast<std::chrono::microseconds>(
+					Clock::now() - frameStart
+				).count()
+				);
+
+		ResizeDiag::RecordFrameTiming(
+			session,
+			frameUs,
+			wnd.Gfx().LastPresentDurationUs(),
+			0,      // sceneApplyUs — add stage timing in the next pass
+			0,      // mainResizeUs
+			0,      // renderSceneUs
+			0,      // imguiBuildUs
+			0,      // mainDrawUs
+			0,      // platformWindowsUs
+			false   // sceneApplyCalled
+		);
+	}
+#endif
 }
 
 void App::SpawnSimulationWindow() noexcept
