@@ -700,17 +700,37 @@ void Graphics::RenderFrameEnd()
 		backBufferClearColor
 	);
 
+#if RESIZE_DIAG_ENABLED
+	using Clock = std::chrono::steady_clock;
+
+	const auto mainDrawStart = Clock::now();
+#endif
+
 	ImGui::Render();
 
 	ImGui_ImplDX11_RenderDrawData(
 		ImGui::GetDrawData()
 	);
 
+#if RESIZE_DIAG_ENABLED
+	m_lastMainDrawDurationUs =
+		static_cast<unsigned long long>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				Clock::now() - mainDrawStart
+			).count()
+			);
+
+	m_lastPlatformWindowsDurationUs = 0;
+#endif
+
 	// Required for Dear ImGui multi-viewport support.
 	ImGuiIO& io = ImGui::GetIO();
 
 	if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable)
 	{
+#if RESIZE_DIAG_ENABLED
+		const auto platformWindowsStart = Clock::now();
+#endif
 
 		ImGui::UpdatePlatformWindows();
 		
@@ -800,6 +820,16 @@ void Graphics::RenderFrameEnd()
 			cpBackBufferRTV.GetAddressOf(),
 			nullptr
 		);
+
+#if RESIZE_DIAG_ENABLED
+		m_lastPlatformWindowsDurationUs =
+			static_cast<unsigned long long>(
+				std::chrono::duration_cast<std::chrono::microseconds>(
+					Clock::now() - platformWindowsStart
+				).count()
+				);
+#endif
+
 	}
 }
 

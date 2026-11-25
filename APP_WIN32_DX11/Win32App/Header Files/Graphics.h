@@ -112,6 +112,16 @@ public:
 		return m_lastPresentDurationUs;
 	}
 
+	unsigned long long LastMainDrawDurationUs() const noexcept
+	{
+		return m_lastMainDrawDurationUs;
+	}
+
+	unsigned long long LastPlatformWindowsDurationUs() const noexcept
+	{
+		return m_lastPlatformWindowsDurationUs;
+	}
+
 private:
 	DirectX::XMMATRIX projection;
 	DirectX::XMMATRIX camera;
@@ -170,5 +180,7 @@ private:
 	bool m_hasInteractiveResizeApplied = false;
 
 	unsigned long long m_lastPresentDurationUs = 0;
+	unsigned long long m_lastMainDrawDurationUs = 0;
+	unsigned long long m_lastPlatformWindowsDurationUs = 0;
 
 };

@@ -154,8 +154,8 @@ void App::DoFrame()
 			0,              // mainResizeUs: not measured yet
 			renderSceneUs,
 			imguiBuildUs,
-			0,              // mainDrawUs: not measured yet
-			0,              // platformWindowsUs: not measured yet
+			wnd.Gfx().LastMainDrawDurationUs(),
+			wnd.Gfx().LastPlatformWindowsDurationUs(), 
 			false           // sceneApplyCalled: not measured yet
 		);
 	}
