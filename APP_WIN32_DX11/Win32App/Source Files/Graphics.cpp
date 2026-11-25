@@ -823,27 +823,66 @@ void Graphics::Shutdown() {
 } // Shutdown
 
 void Graphics::Begin() {
-	// Apply a pending resize outside the window procedure
-	if (!g_minimized &&	g_pendingWidth > 0 && g_pendingHeight > 0)
+//	// Apply a pending resize outside the window procedure
+//	if (!g_minimized &&	g_pendingWidth > 0 && g_pendingHeight > 0)
+//	{
+//		// Copy
+//		UINT width = g_pendingWidth;
+//		UINT height = g_pendingHeight;
+//		const bool resizeScene = g_pendingSceneResize;
+//
+//		g_pendingWidth = 0;
+//		g_pendingHeight = 0;
+//		g_pendingSceneResize = false;
+//
+//#if RESIZE_DIAG_ENABLED
+//		ResizeDiag::Log(
+//			"Graphics::Begin applying pending size=%ux%u resizeScene=%d",
+//			width,
+//			height,
+//			resizeScene ? 1 : 0);
+//#endif
+//
+//		Resize(width, height, resizeScene);
+//	}
+
+	// Apply a pending resize outside the window procedure.
+	if (!g_minimized && g_pendingWidth > 0 && g_pendingHeight > 0)
 	{
-		// Copy
-		UINT width = g_pendingWidth;
-		UINT height = g_pendingHeight;
-		const bool resizeScene = g_pendingSceneResize;
+		// In this code path, resizeScene == false means a live interactive resize.
+		// The final request has resizeScene == true and must not wait.
+		const bool interactiveResize = !g_pendingSceneResize;
+		const auto now = std::chrono::steady_clock::now();
+		constexpr auto throttleInterval = std::chrono::milliseconds(50);
 
-		g_pendingWidth = 0;
-		g_pendingHeight = 0;
-		g_pendingSceneResize = false;
+		const bool throttleElapsed =
+			!m_hasInteractiveResizeApplied ||
+			now - m_lastInteractiveResizeApply >= throttleInterval;
 
-#if RESIZE_DIAG_ENABLED
-		ResizeDiag::Log(
-			"Graphics::Begin applying pending size=%ux%u resizeScene=%d",
-			width,
-			height,
-			resizeScene ? 1 : 0);
-#endif
+		if (!interactiveResize || throttleElapsed)
+		{
+			const UINT width = g_pendingWidth;
+			const UINT height = g_pendingHeight;
+			const bool resizeScene = g_pendingSceneResize;
 
-		Resize(width, height, resizeScene);
+			g_pendingWidth = 0;
+			g_pendingHeight = 0;
+			g_pendingSceneResize = false;
+
+			Resize(width, height, resizeScene);
+
+			if (interactiveResize)
+			{
+				m_lastInteractiveResizeApply = now;
+				m_hasInteractiveResizeApplied = true;
+			}
+			else
+			{
+				// The final resize is applied immediately; allow the next interactive resize session
+				// to apply its first size immediately.
+				m_hasInteractiveResizeApplied = false;
+			}
+		}
 	}
 
 	// Start a new ImGui frame

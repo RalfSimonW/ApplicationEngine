@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <random>
+#include <chrono>
 #include "ConditionalNoexcept.h"
 
 #include "imgui.h"
@@ -158,5 +159,8 @@ private:
 	////----RECT gMaximizeButtonRect{0,0,50,50};
 
 	std::optional<bool> consoleOpen = false;
+
+	std::chrono::steady_clock::time_point m_lastInteractiveResizeApply{};
+	bool m_hasInteractiveResizeApplied = false;
 
 };
