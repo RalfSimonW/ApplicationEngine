@@ -83,7 +83,6 @@ void App::DoFrame()
 {
 #if RESIZE_DIAG_ENABLED
 	using Clock = std::chrono::steady_clock;
-
 	const auto frameStart = Clock::now();
 	const uint64_t session = ResizeDiag::ActiveMeasurementSession();
 #endif
@@ -93,29 +92,48 @@ void App::DoFrame()
 
 	const auto dt = timer.Mark() * speed_factor;
 
-    wnd.Gfx().Begin();
-	
+	wnd.Gfx().Begin();
 	wnd.Gfx().SetCamera(cam.GetMatrix());
-
 	light->Bind(wnd.Gfx(), cam.GetMatrix());
 
+#if RESIZE_DIAG_ENABLED
+	const auto sceneStart = Clock::now();
+#endif
 	UpdateScene(dt);
 	DrawScene();
-	
+
+#if RESIZE_DIAG_ENABLED
+	const auto renderSceneUs =
+		static_cast<unsigned long long>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				Clock::now() - sceneStart
+			).count()
+			);
+
+	const auto imguiBuildStart = Clock::now();
+#endif
+
 	// ImGui windows
 	SpawnSimulationWindow();
+
 	// Control camera and light
 	cam.SpawnControlWindow();
 	light->SpawnControlWindow();
-	
 	SpawnBoxWindowManagerWindow();
 	SpawnBoxWindows();
-
 	wnd.PublishImGuiCaptureState();
 
-	// Present
-    wnd.Gfx().End();
+#if RESIZE_DIAG_ENABLED
+	const auto imguiBuildUs =
+		static_cast<unsigned long long>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				Clock::now() - imguiBuildStart
+			).count()
+			);
+#endif
 
+	// Present
+	wnd.Gfx().End();
 	InstallViewportSizingCallbacks();
 
 #if RESIZE_DIAG_ENABLED
@@ -132,13 +150,13 @@ void App::DoFrame()
 			session,
 			frameUs,
 			wnd.Gfx().LastPresentDurationUs(),
-			0,      // sceneApplyUs — add stage timing in the next pass
-			0,      // mainResizeUs
-			0,      // renderSceneUs
-			0,      // imguiBuildUs
-			0,      // mainDrawUs
-			0,      // platformWindowsUs
-			false   // sceneApplyCalled
+			0,              // sceneApplyUs: not measured yet
+			0,              // mainResizeUs: not measured yet
+			renderSceneUs,
+			imguiBuildUs,
+			0,              // mainDrawUs: not measured yet
+			0,              // platformWindowsUs: not measured yet
+			false           // sceneApplyCalled: not measured yet
 		);
 	}
 #endif

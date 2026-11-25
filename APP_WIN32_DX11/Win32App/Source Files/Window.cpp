@@ -8,6 +8,12 @@
 #include <iostream>
 #include <vector>
 
+namespace
+{
+	constexpr UINT_PTR kResizeDiagEndTimerId = 2;
+	constexpr UINT kResizeDiagSettleDelayMs = 250;
+}
+
 // Window class stuff
 Window::WindowClass Window::WindowClass::wndClass;
 
@@ -547,6 +553,12 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 		break;
 
 	case WM_ENTERSIZEMOVE:
+		KillTimer(hWnd, kResizeDiagEndTimerId);
+
+#if RESIZE_DIAG_ENABLED
+		ResizeDiag::ResetResizeMeasurements();
+#endif
+
 		uResult = SetTimer(hWnd, 1, USER_TIMER_MINIMUM, NULL);
 		if (uResult == 0)
 		{
@@ -572,9 +584,27 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 			true
 		);
 		
+		SetTimer(
+			hWnd,
+			kResizeDiagEndTimerId,
+			kResizeDiagSettleDelayMs,
+			nullptr
+		);
+
 		break;
 
 	case WM_TIMER:
+		if (wParam == kResizeDiagEndTimerId)
+		{
+			KillTimer(hWnd, kResizeDiagEndTimerId);
+
+#if RESIZE_DIAG_ENABLED
+			ResizeDiag::EndResizeMeasurements("resize settled");
+#endif
+
+			return 0;
+		}
+
 		if (inSizemove && wParam == 1)
 			RedrawWindow(hWnd, nullptr, nullptr, RDW_INTERNALPAINT);
 		
