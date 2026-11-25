@@ -258,6 +258,108 @@ namespace ResizeDiag
 		}
 	}
 
+	inline void RecordFrameTimingMulti(
+		uint64_t session,
+		unsigned long long frameUs,
+		unsigned long long presentUs,
+		unsigned long long sceneApplyUs,
+		unsigned long long mainResizeUs,
+		unsigned long long inputQueueUs,
+		unsigned long long graphicsBeginOtherUs,
+		unsigned long long sceneSetupUs,
+		unsigned long long renderSceneUs,
+		unsigned long long imguiBuildUs,
+		unsigned long long mainDrawUs,
+		unsigned long long platformWindowsUs,
+		unsigned long long viewportCallbacksUs,
+		bool sceneApplyCalled)
+	{
+		if (session == 0)
+			return;
+
+		uint64_t frameNumber = 0;
+		unsigned long long outsidePresentUs = 0;
+		bool logSlowFrame = false;
+
+		{
+			std::lock_guard<std::mutex> lock(measurementMutex);
+
+			if (!measurementActive.load(std::memory_order_acquire) ||
+				session != measurementSessionId.load(std::memory_order_acquire))
+			{
+				return;
+			}
+
+			frameNumber = ++measurementFrameNumber;
+
+			frameTimedCount.fetch_add(1);
+			frameTimeUs.fetch_add(frameUs);
+			UpdateMax(frameMaxUs, frameUs);
+
+			presentTimedCount.fetch_add(1);
+			presentTimeUs.fetch_add(presentUs);
+			UpdateMax(presentMaxUs, presentUs);
+
+			outsidePresentUs =
+				frameUs > presentUs ? frameUs - presentUs : 0;
+
+			frameWorkTotalUs.fetch_add(outsidePresentUs);
+			UpdateMax(frameWorkMaxUs, outsidePresentUs);
+
+			if (sceneApplyCalled)
+			{
+				sceneApplyCount.fetch_add(1);
+				sceneApplyTotalUs.fetch_add(sceneApplyUs);
+				UpdateMax(sceneApplyMaxUs, sceneApplyUs);
+			}
+
+			logSlowFrame = frameUs >= 12000; // 12 ms
+		}
+
+		if (logSlowFrame)
+		{
+			const unsigned long long measuredUs =
+				inputQueueUs +
+				mainResizeUs +
+				(sceneApplyCalled ? sceneApplyUs : 0) +
+				graphicsBeginOtherUs +
+				sceneSetupUs +
+				renderSceneUs +
+				imguiBuildUs +
+				mainDrawUs +
+				platformWindowsUs +
+				viewportCallbacksUs;
+
+			const unsigned long long otherOutsidePresentUs =
+				outsidePresentUs > measuredUs
+				? outsidePresentUs - measuredUs
+				: 0;
+
+			Log("Resize frame #%llu: frame=%llu us Present=%llu us "
+				"outsidePresent=%llu us InputQueue=%llu us "
+				"MainResize=%llu us ApplySceneResize=%llu us "
+				"GraphicsBeginOther=%llu us SceneSetup=%llu us "
+				"RenderScene=%llu us ImGuiBuild=%llu us "
+				"MainDraw=%llu us Viewports=%llu us "
+				"ViewportCallbacks=%llu us other=%llu us",
+				static_cast<unsigned long long>(frameNumber),
+				frameUs,
+				presentUs,
+				outsidePresentUs,
+				inputQueueUs,
+				mainResizeUs,
+				sceneApplyUs,
+				graphicsBeginOtherUs,
+				sceneSetupUs,
+				renderSceneUs,
+				imguiBuildUs,
+				mainDrawUs,
+				platformWindowsUs,
+				viewportCallbacksUs,
+				otherOutsidePresentUs);
+		}
+	}
+
 	inline void LogStats()
 	{
 		Log(

@@ -85,38 +85,66 @@ void App::DoFrame()
 	using Clock = std::chrono::steady_clock;
 	const auto frameStart = Clock::now();
 	const uint64_t session = ResizeDiag::ActiveMeasurementSession();
+
+	const auto elapsedUs = [](Clock::time_point start)
+		{
+			return static_cast<unsigned long long>(
+				std::chrono::duration_cast<std::chrono::microseconds>(
+					Clock::now() - start
+				).count()
+				);
+		};
 #endif
 
+#if RESIZE_DIAG_ENABLED
+	const auto inputStart = Clock::now();
+#endif
 	wnd.ApplyPendingResize();
 	wnd.ApplyQueuedInputToImGui();
+#if RESIZE_DIAG_ENABLED
+	const auto inputQueueUs = elapsedUs(inputStart);
+#endif
 
 	const auto dt = timer.Mark() * speed_factor;
 
+#if RESIZE_DIAG_ENABLED
+	const auto graphicsBeginStart = Clock::now();
+#endif
 	wnd.Gfx().Begin();
-	wnd.Gfx().SetCamera(cam.GetMatrix());
-	light->Bind(wnd.Gfx(), cam.GetMatrix());
+#if RESIZE_DIAG_ENABLED
+	const auto graphicsBeginUs = elapsedUs(graphicsBeginStart);
+	const auto mainResizeUs = wnd.Gfx().LastMainResizeDurationUs();
+	const auto sceneApplyUs = wnd.Gfx().LastSceneResizeDurationUs();
+	const bool sceneApplyCalled = wnd.Gfx().LastSceneResizeCalled();
+
+	// Graphics::Begin includes the resize work, so subtract it here to
+	// keep the diagnostic categories non-overlapping.
+	const auto resizeWorkUs = mainResizeUs + sceneApplyUs;
+	const auto graphicsBeginOtherUs =
+		graphicsBeginUs > resizeWorkUs
+		? graphicsBeginUs - resizeWorkUs
+		: 0;
+#endif
 
 #if RESIZE_DIAG_ENABLED
+	const auto sceneSetupStart = Clock::now();
+#endif
+	wnd.Gfx().SetCamera(cam.GetMatrix());
+	light->Bind(wnd.Gfx(), cam.GetMatrix());
+#if RESIZE_DIAG_ENABLED
+	const auto sceneSetupUs = elapsedUs(sceneSetupStart);
 	const auto sceneStart = Clock::now();
 #endif
+
 	UpdateScene(dt);
 	DrawScene();
 
 #if RESIZE_DIAG_ENABLED
-	const auto renderSceneUs =
-		static_cast<unsigned long long>(
-			std::chrono::duration_cast<std::chrono::microseconds>(
-				Clock::now() - sceneStart
-			).count()
-			);
-
+	const auto renderSceneUs = elapsedUs(sceneStart);
 	const auto imguiBuildStart = Clock::now();
 #endif
 
-	// ImGui windows
 	SpawnSimulationWindow();
-
-	// Control camera and light
 	cam.SpawnControlWindow();
 	light->SpawnControlWindow();
 	SpawnBoxWindowManagerWindow();
@@ -124,39 +152,39 @@ void App::DoFrame()
 	wnd.PublishImGuiCaptureState();
 
 #if RESIZE_DIAG_ENABLED
-	const auto imguiBuildUs =
-		static_cast<unsigned long long>(
-			std::chrono::duration_cast<std::chrono::microseconds>(
-				Clock::now() - imguiBuildStart
-			).count()
-			);
+	const auto imguiBuildUs = elapsedUs(imguiBuildStart);
 #endif
 
-	// Present
 	wnd.Gfx().End();
+
+#if RESIZE_DIAG_ENABLED
+	const auto viewportCallbacksStart = Clock::now();
+#endif
 	InstallViewportSizingCallbacks();
+#if RESIZE_DIAG_ENABLED
+	const auto viewportCallbacksUs = elapsedUs(viewportCallbacksStart);
+#endif
 
 #if RESIZE_DIAG_ENABLED
 	if (session != 0)
 	{
-		const auto frameUs =
-			static_cast<unsigned long long>(
-				std::chrono::duration_cast<std::chrono::microseconds>(
-					Clock::now() - frameStart
-				).count()
-				);
+		const auto frameUs = elapsedUs(frameStart);
 
-		ResizeDiag::RecordFrameTiming(
+		ResizeDiag::RecordFrameTimingMulti(
 			session,
 			frameUs,
 			wnd.Gfx().LastPresentDurationUs(),
-			0,              // sceneApplyUs: not measured yet
-			0,              // mainResizeUs: not measured yet
+			sceneApplyUs,
+			mainResizeUs,
+			inputQueueUs,
+			graphicsBeginOtherUs,
+			sceneSetupUs,
 			renderSceneUs,
 			imguiBuildUs,
 			wnd.Gfx().LastMainDrawDurationUs(),
-			wnd.Gfx().LastPlatformWindowsDurationUs(), 
-			false           // sceneApplyCalled: not measured yet
+			wnd.Gfx().LastPlatformWindowsDurationUs(),
+			viewportCallbacksUs,
+			sceneApplyCalled
 		);
 	}
 #endif

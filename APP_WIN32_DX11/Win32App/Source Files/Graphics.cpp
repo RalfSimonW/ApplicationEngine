@@ -534,6 +534,11 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 
 	if (outputChanged)
 	{
+
+#if RESIZE_DIAG_ENABLED
+		const auto mainResizeStart = std::chrono::steady_clock::now();
+#endif
+
 		ReleaseMainRenderTarget();
 
 #if RESIZE_DIAG_ENABLED
@@ -554,6 +559,11 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 			std::chrono::duration_cast<std::chrono::microseconds>(
 				std::chrono::steady_clock::now() - resizeStart
 			).count();
+
+		ResizeDiag::resizeBuffersCount.fetch_add(
+			1,
+			std::memory_order_relaxed
+		);
 
 		ResizeDiag::RecordResizeBuffersTiming(
 			resizeSession,
@@ -582,12 +592,31 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 			// ResizeBuffers failed: keep the old dimensions and reacquire the
 			// still-valid swap-chain back buffer.
 			CreateMainRenderTarget();
+
+#if RESIZE_DIAG_ENABLED
+			m_lastMainResizeDurationUs =
+				static_cast<unsigned long long>(
+					std::chrono::duration_cast<std::chrono::microseconds>(
+						std::chrono::steady_clock::now() - mainResizeStart
+					).count()
+					);
+#endif
+
 			return;
 		}
 
 		mOutputWidth = static_cast<int>(width);
 		mOutputHeight = static_cast<int>(height);
 		CreateMainRenderTarget();
+
+#if RESIZE_DIAG_ENABLED
+		m_lastMainResizeDurationUs =
+			static_cast<unsigned long long>(
+				std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now() - mainResizeStart
+				).count()
+				);
+#endif
 
 #if RESIZE_DIAG_ENABLED
 		D3D11_TEXTURE2D_DESC backBufferDesc{};
@@ -601,6 +630,11 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 
 	if (sceneChanged)
 	{
+
+#if RESIZE_DIAG_ENABLED
+		const auto sceneResizeStart = std::chrono::steady_clock::now();
+		m_lastSceneResizeCalled = true;
+#endif
 
 #if RESIZE_DIAG_ENABLED
 		ResizeDiag::Log(
@@ -641,6 +675,16 @@ void Graphics::Resize(UINT width, UINT height, bool resizeScene)
 		m_viewport.Height = static_cast<float>(SceneHeight);
 		m_viewport.MinDepth = 0.0f;
 		m_viewport.MaxDepth = 1.0f;
+
+#if RESIZE_DIAG_ENABLED
+		m_lastSceneResizeDurationUs =
+			static_cast<unsigned long long>(
+				std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now() - sceneResizeStart
+				).count()
+				);
+#endif
+
 	}
 }
 
@@ -837,7 +881,7 @@ void Graphics::Present(bool vsync)
 {
 	const auto start = std::chrono::steady_clock::now();
 
-	cpSwapChain->Present(
+	const HRESULT hr = cpSwapChain->Present(
 		vsync ? 1 : 0,
 		0
 	);
@@ -848,6 +892,22 @@ void Graphics::Present(bool vsync)
 				std::chrono::steady_clock::now() - start
 			).count()
 			);
+
+#if RESIZE_DIAG_ENABLED
+	ResizeDiag::presentCount.fetch_add(
+		1,
+		std::memory_order_relaxed
+	);
+
+	if (FAILED(hr))
+	{
+		ResizeDiag::presentFailureCount.fetch_add(
+			1,
+			std::memory_order_relaxed
+		);
+	}
+#endif
+
 }
 
 void Graphics::Shutdown() {
@@ -881,28 +941,12 @@ void Graphics::Shutdown() {
 } // Shutdown
 
 void Graphics::Begin() {
-//	// Apply a pending resize outside the window procedure
-//	if (!g_minimized &&	g_pendingWidth > 0 && g_pendingHeight > 0)
-//	{
-//		// Copy
-//		UINT width = g_pendingWidth;
-//		UINT height = g_pendingHeight;
-//		const bool resizeScene = g_pendingSceneResize;
-//
-//		g_pendingWidth = 0;
-//		g_pendingHeight = 0;
-//		g_pendingSceneResize = false;
-//
-//#if RESIZE_DIAG_ENABLED
-//		ResizeDiag::Log(
-//			"Graphics::Begin applying pending size=%ux%u resizeScene=%d",
-//			width,
-//			height,
-//			resizeScene ? 1 : 0);
-//#endif
-//
-//		Resize(width, height, resizeScene);
-//	}
+
+#if RESIZE_DIAG_ENABLED
+	m_lastMainResizeDurationUs = 0;
+	m_lastSceneResizeDurationUs = 0;
+	m_lastSceneResizeCalled = false;
+#endif
 
 	// Apply a pending resize outside the window procedure.
 	if (!g_minimized && g_pendingWidth > 0 && g_pendingHeight > 0)
