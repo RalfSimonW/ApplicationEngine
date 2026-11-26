@@ -303,6 +303,8 @@ void Graphics::Initialize(HWND hWnd, int width, int height) {
 	// Create device and swap chain before init ImGui
 	CreateDeviceAndSwapChain(hWindow, mOutputWidth, mOutputHeight);
 
+	CreateGpuTimingQueries();
+
 	CreateMainRenderTarget();
 	
 	SceneWidth = mOutputWidth;
@@ -938,6 +940,18 @@ void Graphics::Shutdown() {
 	cpDevice.Reset();
 
 	hWindow = nullptr;
+
+	// Release query objects during shutdown
+	for (auto& slot : m_gpuTimingSlots)
+	{
+		slot.disjoint.Reset();
+		slot.start.Reset();
+		slot.end.Reset();
+		slot.pending = false;
+	}
+	m_gpuTimingAvailable = false;
+	m_activeGpuTimingSlot = -1;
+
 } // Shutdown
 
 void Graphics::Begin() {
@@ -972,6 +986,8 @@ void Graphics::Begin() {
 			g_pendingSceneResize = false;
 
 			Resize(width, height, resizeScene);
+			
+			BeginGpuTiming();
 
 			if (interactiveResize)
 			{
@@ -1017,6 +1033,7 @@ void Graphics::Begin() {
 
 void Graphics::End() {	
 	RenderFrameEnd();
+	EndGpuTiming();
 	Present(true);
 }
 
@@ -1270,44 +1287,176 @@ bool Graphics::IsImguiEnabled() const noexcept
 
 void Graphics::CreateGpuTimingQueries() noexcept
 {
-#if RESIZE_DIAG_ENABLED
+	m_gpuTimingAvailable = false;
+	m_activeGpuTimingSlot = -1;
+	m_nextGpuTimingSlot = 0;
+
+	if (!cpDevice || !cpDeviceContext)
+		return;
+
 	D3D11_QUERY_DESC desc{};
+	desc.MiscFlags = 0;
 
 	for (auto& slot : m_gpuTimingSlots)
 	{
+		slot.disjoint.Reset();
+		slot.start.Reset();
+		slot.end.Reset();
+		slot.pending = false;
+		slot.session = 0;
+
 		desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
 		if (FAILED(cpDevice->CreateQuery(
 			&desc, slot.disjoint.GetAddressOf())))
 		{
-			ResizeDiag::Log("GPU timing query creation failed: disjoint");
 			return;
 		}
 
 		desc.Query = D3D11_QUERY_TIMESTAMP;
 		if (FAILED(cpDevice->CreateQuery(
-			&desc, slot.start.GetAddressOf())) ||
-			FAILED(cpDevice->CreateQuery(
-				&desc, slot.end.GetAddressOf())))
+			&desc, slot.start.GetAddressOf())))
 		{
-			ResizeDiag::Log("GPU timing query creation failed: timestamp");
+			return;
+		}
+
+		if (FAILED(cpDevice->CreateQuery(
+			&desc, slot.end.GetAddressOf())))
+		{
 			return;
 		}
 	}
 
 	m_gpuTimingAvailable = true;
-#endif
 }
 
 void Graphics::PollGpuTimingQueries() noexcept
 {
+	if (!m_gpuTimingAvailable || !cpDeviceContext)
+		return;
+
+	for (std::size_t i = 0; i < m_gpuTimingSlots.size(); ++i)
+	{
+		auto& slot = m_gpuTimingSlots[i];
+		if (!slot.pending)
+			continue;
+
+		D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjointData{};
+		UINT64 startTimestamp = 0;
+		UINT64 endTimestamp = 0;
+
+		const UINT flags = D3D11_ASYNC_GETDATA_DONOTFLUSH;
+
+		const HRESULT hrDisjoint = cpDeviceContext->GetData(
+			slot.disjoint.Get(),
+			&disjointData,
+			sizeof(disjointData),
+			flags);
+
+		const HRESULT hrStart = cpDeviceContext->GetData(
+			slot.start.Get(),
+			&startTimestamp,
+			sizeof(startTimestamp),
+			flags);
+
+		const HRESULT hrEnd = cpDeviceContext->GetData(
+			slot.end.Get(),
+			&endTimestamp,
+			sizeof(endTimestamp),
+			flags);
+
+		// The GPU hasn't finished this slot yet. Leave it pending and
+		// try again on a later frame; never block waiting for it.
+		if (hrDisjoint == S_FALSE || hrStart == S_FALSE || hrEnd == S_FALSE)
+			continue;
+
+		// A failed query won't become useful; free the slot.
+		if (FAILED(hrDisjoint) || FAILED(hrStart) || FAILED(hrEnd))
+		{
+			slot.pending = false;
+			continue;
+		}
+
+		slot.pending = false;
+
+		if (disjointData.Disjoint ||
+			disjointData.Frequency == 0 ||
+			endTimestamp < startTimestamp)
+		{
+			continue;
+		}
+
+		const double gpuUs =
+			static_cast<double>(endTimestamp - startTimestamp) *
+			1000000.0 /
+			static_cast<double>(disjointData.Frequency);
+
+		// Temporary diagnostic: avoid logging every frame, since
+		// OutputDebugString logging can affect timing.
+		if (gpuUs >= 12000.0)
+		{
+			ResizeDiag::Log(
+				"GPU frame time: session=%llu slot=%zu gpu=%.1f us",
+				static_cast<unsigned long long>(slot.session),
+				i,
+				gpuUs);
+		}
+	}
 }
 
 void Graphics::BeginGpuTiming() noexcept
 {
+	// Poll first so completed slots can be reused.
+	PollGpuTimingQueries();
+
+	if (!m_gpuTimingAvailable ||
+		!cpDeviceContext ||
+		m_activeGpuTimingSlot >= 0)
+	{
+		return;
+	}
+
+	const uint64_t session = ResizeDiag::ActiveMeasurementSession();
+	if (session == 0)
+		return; // Only collect during an active diagnostic session.
+
+	for (std::size_t offset = 0; offset < m_gpuTimingSlots.size(); ++offset)
+	{
+		const std::size_t index =
+			(m_nextGpuTimingSlot + offset) % m_gpuTimingSlots.size();
+
+		auto& slot = m_gpuTimingSlots[index];
+		if (slot.pending)
+			continue; // Don't overwrite a result the GPU hasn't completed.
+
+		slot.session = session;
+
+		cpDeviceContext->Begin(slot.disjoint.Get());
+		cpDeviceContext->End(slot.start.Get());
+
+		m_activeGpuTimingSlot = static_cast<int>(index);
+		m_nextGpuTimingSlot = (index + 1) % m_gpuTimingSlots.size();
+		return;
+	}
+
+	// All four slots are still pending. Skip this frame's sample.
 }
 
 void Graphics::EndGpuTiming() noexcept
 {
+	if (m_activeGpuTimingSlot < 0 ||
+		!cpDeviceContext)
+	{
+		return;
+	}
+
+	auto& slot =
+		m_gpuTimingSlots[static_cast<std::size_t>(m_activeGpuTimingSlot)];
+
+	cpDeviceContext->End(slot.end.Get());
+	cpDeviceContext->End(slot.disjoint.Get());
+
+	slot.pending = true;
+	m_activeGpuTimingSlot = -1;
 }
 
 void Graphics::OnWindowSizeChanged(
