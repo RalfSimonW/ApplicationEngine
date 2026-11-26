@@ -12,6 +12,7 @@
 #include <random>
 #include <chrono>
 #include "ConditionalNoexcept.h"
+#include "ResizeDiag.h"
 
 #include <array>
 
@@ -202,6 +203,7 @@ private:
 	unsigned long long m_lastSceneResizeDurationUs = 0;
 	bool m_lastSceneResizeCalled = false;
 
+#if RESIZE_DIAG_ENABLED
 	struct GpuTimingSlot
 	{
 		Microsoft::WRL::ComPtr<ID3D11Query> disjoint;
@@ -221,5 +223,6 @@ private:
 	void PollGpuTimingQueries() noexcept;
 	void BeginGpuTiming() noexcept;
 	void EndGpuTiming() noexcept;
+#endif
 
 };

@@ -187,11 +187,14 @@ void Window::PublishImGuiCaptureState()
 
 	if (io.WantCaptureKeyboard != lastWantCaptureKeyboard)
 	{
+
+#if RESIZE_DIAG_ENABLED
 		ResizeDiag::Log(
 			"ImGui keyboard capture changed: want=%d text=%d activeItem=%d",
 			io.WantCaptureKeyboard ? 1 : 0,
 			io.WantTextInput ? 1 : 0,
 			ImGui::IsAnyItemActive() ? 1 : 0);
+#endif
 
 		lastWantCaptureKeyboard = io.WantCaptureKeyboard;
 	}
@@ -316,11 +319,13 @@ void Window::ApplyQueuedInputToImGui()
 				(event.message == WM_KEYDOWN || event.message == WM_SYSKEYDOWN ||
 					event.message == WM_KEYUP || event.message == WM_SYSKEYUP))
 			{
+#if RESIZE_DIAG_ENABLED
 				ResizeDiag::Log(
 					"ApplyQueuedInputToImGui Space message=%u capture=%d pressed=%d",
 					static_cast<unsigned int>(event.message),
 					imguiWantsKeyboard.load(std::memory_order_relaxed) ? 1 : 0,
 					kbd.KeyIsPressed(VK_SPACE) ? 1 : 0);
+#endif
 			}
 
 			break;
@@ -524,7 +529,9 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	static bool s_minimized = false;
 	static int mouseY = 0;
 
+#if RESIZE_DIAG_ENABLED
 	const auto sizeEvent = ++ResizeDiag::wmSizeCount;
+#endif
 
 	switch (msg)
 	{
@@ -663,9 +670,11 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 			(msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN ||
 				msg == WM_KEYUP || msg == WM_SYSKEYUP))
 		{
+#if RESIZE_DIAG_ENABLED
 			ResizeDiag::Log(
 				"Window::HandleMsg Space message=%u",
 				static_cast<unsigned int>(msg));
+#endif
 		}
 
 		InputEvent event{};

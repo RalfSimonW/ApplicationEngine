@@ -98,6 +98,7 @@ static void LogViewportScaleDiagnostic()
 			? static_cast<float>(clientHeight) / drawData->DisplaySize.y
 			: 0.0f;
 
+#if RESIZE_DIAG_ENABLED
 		ResizeDiag::Log(
 			"Viewport scale: id=%u hwnd=%p dpi=%.2f "
 			"client=%ldx%ld display=%.1fx%.1f "
@@ -113,6 +114,7 @@ static void LogViewportScaleDiagnostic()
 			drawData->FramebufferScale.y,
 			ratioX,
 			ratioY);
+#endif
 	}
 }
 
@@ -303,7 +305,9 @@ void Graphics::Initialize(HWND hWnd, int width, int height) {
 	// Create device and swap chain before init ImGui
 	CreateDeviceAndSwapChain(hWindow, mOutputWidth, mOutputHeight);
 
+#if RESIZE_DIAG_ENABLED
 	CreateGpuTimingQueries();
+#endif
 
 	CreateMainRenderTarget();
 	
@@ -828,6 +832,7 @@ void Graphics::RenderFrameEnd()
 				const float mainViewportDpi =
 					mainViewport ? mainViewport->DpiScale : 0.0f;
 
+#if RESIZE_DIAG_ENABLED
 				ResizeDiag::Log(
 					"Platform viewport=%u logicalSize=%.1fx%.1f "
 					"mainHwndDpiScale=%.2f mainViewportDpi=%.2f "
@@ -856,6 +861,7 @@ void Graphics::RenderFrameEnd()
 					DpiScale(hwnd),
 					viewport->DpiScale,
 					static_cast<int>(io.ConfigDpiScaleViewports));
+#endif
 			}
 		}
 
@@ -941,6 +947,7 @@ void Graphics::Shutdown() {
 
 	hWindow = nullptr;
 
+#if RESIZE_DIAG_ENABLED
 	// Release query objects during shutdown
 	for (auto& slot : m_gpuTimingSlots)
 	{
@@ -951,6 +958,7 @@ void Graphics::Shutdown() {
 	}
 	m_gpuTimingAvailable = false;
 	m_activeGpuTimingSlot = -1;
+#endif
 
 } // Shutdown
 
@@ -962,7 +970,9 @@ void Graphics::Begin() {
 	m_lastSceneResizeCalled = false;
 #endif
 
+#if RESIZE_DIAG_ENABLED
 	PollGpuTimingQueries(); // Every frame; never wait for results.
+#endif
 
 	// Apply a pending resize outside the window procedure.
 	if (!g_minimized && g_pendingWidth > 0 && g_pendingHeight > 0)
@@ -1003,8 +1013,10 @@ void Graphics::Begin() {
 		}
 	}
 
+#if RESIZE_DIAG_ENABLED
 	// Start after resize work, before the frame's first GPU rendering command.
 	BeginGpuTiming();
+#endif
 
 	// Start a new ImGui frame
 	ImGui_ImplDX11_NewFrame();
@@ -1037,7 +1049,9 @@ void Graphics::Begin() {
 void Graphics::End() {	
 	RenderFrameEnd();
 
+#if RESIZE_DIAG_ENABLED
 	EndGpuTiming();
+#endif
 	
 	Present(true);
 }
@@ -1290,6 +1304,7 @@ bool Graphics::IsImguiEnabled() const noexcept
 	return imguiEnabled;
 }
 
+#if RESIZE_DIAG_ENABLED
 void Graphics::CreateGpuTimingQueries() noexcept
 {
 	m_gpuTimingAvailable = false;
@@ -1333,7 +1348,9 @@ void Graphics::CreateGpuTimingQueries() noexcept
 
 	m_gpuTimingAvailable = true;
 }
+#endif
 
+#if RESIZE_DIAG_ENABLED
 void Graphics::PollGpuTimingQueries() noexcept
 {
 	if (!m_gpuTimingAvailable || !cpDeviceContext)
@@ -1407,7 +1424,9 @@ void Graphics::PollGpuTimingQueries() noexcept
 		}
 	}
 }
+#endif
 
+#if RESIZE_DIAG_ENABLED
 void Graphics::BeginGpuTiming() noexcept
 {
 	// Poll first so completed slots can be reused.
@@ -1445,7 +1464,9 @@ void Graphics::BeginGpuTiming() noexcept
 
 	// All four slots are still pending. Skip this frame's sample.
 }
+#endif
 
+#if RESIZE_DIAG_ENABLED
 void Graphics::EndGpuTiming() noexcept
 {
 	if (m_activeGpuTimingSlot < 0 ||
@@ -1463,6 +1484,7 @@ void Graphics::EndGpuTiming() noexcept
 	slot.pending = true;
 	m_activeGpuTimingSlot = -1;
 }
+#endif
 
 void Graphics::OnWindowSizeChanged(
 	int width,
