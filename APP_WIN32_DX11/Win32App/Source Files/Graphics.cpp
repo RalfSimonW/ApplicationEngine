@@ -962,6 +962,8 @@ void Graphics::Begin() {
 	m_lastSceneResizeCalled = false;
 #endif
 
+	PollGpuTimingQueries(); // Every frame; never wait for results.
+
 	// Apply a pending resize outside the window procedure.
 	if (!g_minimized && g_pendingWidth > 0 && g_pendingHeight > 0)
 	{
@@ -986,8 +988,6 @@ void Graphics::Begin() {
 			g_pendingSceneResize = false;
 
 			Resize(width, height, resizeScene);
-			
-			BeginGpuTiming();
 
 			if (interactiveResize)
 			{
@@ -1002,6 +1002,9 @@ void Graphics::Begin() {
 			}
 		}
 	}
+
+	// Start after resize work, before the frame's first GPU rendering command.
+	BeginGpuTiming();
 
 	// Start a new ImGui frame
 	ImGui_ImplDX11_NewFrame();
@@ -1033,7 +1036,9 @@ void Graphics::Begin() {
 
 void Graphics::End() {	
 	RenderFrameEnd();
+
 	EndGpuTiming();
+	
 	Present(true);
 }
 
