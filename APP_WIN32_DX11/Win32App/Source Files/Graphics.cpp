@@ -1268,6 +1268,48 @@ bool Graphics::IsImguiEnabled() const noexcept
 	return imguiEnabled;
 }
 
+void Graphics::CreateGpuTimingQueries() noexcept
+{
+#if RESIZE_DIAG_ENABLED
+	D3D11_QUERY_DESC desc{};
+
+	for (auto& slot : m_gpuTimingSlots)
+	{
+		desc.Query = D3D11_QUERY_TIMESTAMP_DISJOINT;
+		if (FAILED(cpDevice->CreateQuery(
+			&desc, slot.disjoint.GetAddressOf())))
+		{
+			ResizeDiag::Log("GPU timing query creation failed: disjoint");
+			return;
+		}
+
+		desc.Query = D3D11_QUERY_TIMESTAMP;
+		if (FAILED(cpDevice->CreateQuery(
+			&desc, slot.start.GetAddressOf())) ||
+			FAILED(cpDevice->CreateQuery(
+				&desc, slot.end.GetAddressOf())))
+		{
+			ResizeDiag::Log("GPU timing query creation failed: timestamp");
+			return;
+		}
+	}
+
+	m_gpuTimingAvailable = true;
+#endif
+}
+
+void Graphics::PollGpuTimingQueries() noexcept
+{
+}
+
+void Graphics::BeginGpuTiming() noexcept
+{
+}
+
+void Graphics::EndGpuTiming() noexcept
+{
+}
+
 void Graphics::OnWindowSizeChanged(
 	int width,
 	int height,

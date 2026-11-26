@@ -13,6 +13,8 @@
 #include <chrono>
 #include "ConditionalNoexcept.h"
 
+#include <array>
+
 #include "imgui.h"
 
 namespace Bind
@@ -186,9 +188,7 @@ private:
 
 	UINT SceneWidth = 0;
 	UINT SceneHeight = 0;
-
-	////----RECT gMaximizeButtonRect{0,0,50,50};
-
+		
 	std::optional<bool> consoleOpen = false;
 
 	std::chrono::steady_clock::time_point m_lastInteractiveResizeApply{};
@@ -201,5 +201,25 @@ private:
 	unsigned long long m_lastMainResizeDurationUs = 0;
 	unsigned long long m_lastSceneResizeDurationUs = 0;
 	bool m_lastSceneResizeCalled = false;
+
+	struct GpuTimingSlot
+	{
+		Microsoft::WRL::ComPtr<ID3D11Query> disjoint;
+		Microsoft::WRL::ComPtr<ID3D11Query> start;
+		Microsoft::WRL::ComPtr<ID3D11Query> end;
+		uint64_t session = 0;
+		bool pending = false;
+	};
+
+	static constexpr std::size_t kGpuTimingSlotCount = 4;
+	std::array<GpuTimingSlot, kGpuTimingSlotCount> m_gpuTimingSlots{};
+	std::size_t m_nextGpuTimingSlot = 0;
+	int m_activeGpuTimingSlot = -1;
+	bool m_gpuTimingAvailable = false;
+
+	void CreateGpuTimingQueries() noexcept;
+	void PollGpuTimingQueries() noexcept;
+	void BeginGpuTiming() noexcept;
+	void EndGpuTiming() noexcept;
 
 };
