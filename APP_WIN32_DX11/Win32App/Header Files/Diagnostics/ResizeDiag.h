@@ -87,6 +87,29 @@ namespace ResizeDiag
 		OutputDebugStringA(line);
 	}
 
+	inline void LogCursorEvent(
+		const char* stage,
+		HWND hwnd,
+		UINT hitTest,
+		int requestedCursor,
+		bool cursorEnabled,
+		HCURSOR selectedCursor,
+		HCURSOR previousCursor,
+		HCURSOR currentCursor)
+	{
+		Log(
+			"Cursor %s hwnd=%p hitTest=%u requested=%d enabled=%d "
+			"selected=%p previous=%p current=%p",
+			stage ? stage : "unknown",
+			hwnd,
+			static_cast<unsigned int>(hitTest),
+			requestedCursor,
+			cursorEnabled ? 1 : 0,
+			reinterpret_cast<void*>(selectedCursor),
+			reinterpret_cast<void*>(previousCursor),
+			reinterpret_cast<void*>(currentCursor));
+	}
+
 	inline void UpdateMax(
 		std::atomic<unsigned long long>& maximum,
 		unsigned long long value)

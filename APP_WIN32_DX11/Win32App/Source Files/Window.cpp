@@ -202,7 +202,24 @@ void Window::PublishImGuiCaptureState()
 	imguiWantsMouse.store(io.WantCaptureMouse, std::memory_order_relaxed);
 	imguiWantsKeyboard.store(io.WantCaptureKeyboard, std::memory_order_relaxed);
 	imguiItemHovered.store(ImGui::IsAnyItemHovered(), std::memory_order_relaxed);
-	imguiMouseCursor.store(static_cast<int>(ImGui::GetMouseCursor()), std::memory_order_relaxed);
+
+	const int requestedCursor =
+		static_cast<int>(ImGui::GetMouseCursor());
+
+	imguiMouseCursor.store(
+		requestedCursor,
+		std::memory_order_relaxed);
+
+#if RESIZE_DIAG_ENABLED
+	static int lastLoggedCursor = -1;
+	if (requestedCursor != lastLoggedCursor)
+	{
+		ResizeDiag::Log(
+			"Cursor publish requested=%d",
+			requestedCursor);
+		lastLoggedCursor = requestedCursor;
+	}
+#endif
 
 	imguiWantsTextInput.store(io.WantTextInput, std::memory_order_relaxed);
 	imguiHasActiveItem.store(ImGui::IsAnyItemActive(), std::memory_order_relaxed);
@@ -694,6 +711,48 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 
 		const POINTS pt = MAKEPOINTS(lParam);
 
+#if RESIZE_DIAG_ENABLED
+		static bool boundaryStateKnown = false;
+		static bool wasInsideClient = false;
+
+		RECT clientRect{};
+		if (GetClientRect(hWnd, &clientRect))
+		{
+			const POINT clientPt{
+				static_cast<LONG>(pt.x),
+				static_cast<LONG>(pt.y)
+			};
+			const bool insideClient =
+				PtInRect(&clientRect, clientPt) != FALSE;
+
+			if (!boundaryStateKnown || insideClient != wasInsideClient)
+			{
+				POINT screenPt{ clientPt.x, clientPt.y };
+				const BOOL converted =
+					ClientToScreen(hWnd, &screenPt);
+
+				ResizeDiag::Log(
+					"Mouse boundary hwnd=%p inside=%d client=%ld,%ld "
+					"screen=%ld,%ld screenValid=%d cursorEnabled=%d "
+					"wantsMouse=%d requested=%d current=%p",
+					hWnd,
+					insideClient ? 1 : 0,
+					clientPt.x,
+					clientPt.y,
+					screenPt.x,
+					screenPt.y,
+					converted ? 1 : 0,
+					cursorEnabled ? 1 : 0,
+					imguiWantsMouse.load(std::memory_order_relaxed) ? 1 : 0,
+					imguiMouseCursor.load(std::memory_order_relaxed),
+					reinterpret_cast<void*>(::GetCursor()));
+
+				boundaryStateKnown = true;
+				wasInsideClient = insideClient;
+			}
+		}
+#endif
+
 		// Cursorless exclusive gets first dibs
 		if (!cursorEnabled)
 		{
@@ -884,16 +943,31 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 	case WM_SETCURSOR:
 		if (LOWORD(lParam) == HTCLIENT)
 		{
+			const UINT hitTest = LOWORD(lParam);
+			const int requestedCursor =
+				imguiMouseCursor.load(std::memory_order_relaxed);
+
 			if (!cursorEnabled)
 			{
-				::SetCursor(nullptr);
+				HCURSOR previousCursor = ::SetCursor(nullptr);
+
+#if RESIZE_DIAG_ENABLED
+				ResizeDiag::LogCursorEvent(
+					"WM_SETCURSOR",
+					hWnd,
+					hitTest,
+					requestedCursor,
+					false,
+					nullptr,
+					previousCursor,
+					::GetCursor());
+#endif
+
 				return TRUE;
 			}
 
 			HCURSOR cursor = ::LoadCursor(nullptr, IDC_ARROW);
-
-			switch (static_cast<ImGuiMouseCursor>(
-				imguiMouseCursor.load(std::memory_order_relaxed)))
+			switch (static_cast<ImGuiMouseCursor>(requestedCursor))
 			{
 			case ImGuiMouseCursor_None:
 				cursor = nullptr;
@@ -927,7 +1001,20 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 				break;
 			}
 
-			::SetCursor(cursor);
+			HCURSOR previousCursor = ::SetCursor(cursor);
+
+#if RESIZE_DIAG_ENABLED
+			ResizeDiag::LogCursorEvent(
+				"WM_SETCURSOR",
+				hWnd,
+				hitTest,
+				requestedCursor,
+				true,
+				cursor,
+				previousCursor,
+				::GetCursor());
+#endif
+
 			return TRUE;
 		}
 		break;
