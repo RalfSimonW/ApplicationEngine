@@ -110,6 +110,7 @@ public:
 	void DisableImgui() noexcept;
 	bool IsImguiEnabled() const noexcept;
 
+#if RESIZE_DIAG_ENABLED
 	unsigned long long LastPresentDurationUs() const noexcept
 	{
 		return m_lastPresentDurationUs;
@@ -139,6 +140,13 @@ public:
 	{
 		return m_lastSceneResizeCalled;
 	}
+
+	unsigned long long LastGpuQueryPollDurationUs() const noexcept
+	{
+		return m_lastGpuQueryPollDurationUs;
+	}
+
+#endif
 
 private:
 	DirectX::XMMATRIX projection;
@@ -192,6 +200,7 @@ private:
 		
 	std::optional<bool> consoleOpen = false;
 
+#if RESIZE_DIAG_ENABLED
 	std::chrono::steady_clock::time_point m_lastInteractiveResizeApply{};
 	bool m_hasInteractiveResizeApplied = false;
 
@@ -202,6 +211,8 @@ private:
 	unsigned long long m_lastMainResizeDurationUs = 0;
 	unsigned long long m_lastSceneResizeDurationUs = 0;
 	bool m_lastSceneResizeCalled = false;
+	unsigned long long m_lastGpuQueryPollDurationUs = 0;
+#endif
 
 #if RESIZE_DIAG_ENABLED
 	struct GpuTimingSlot

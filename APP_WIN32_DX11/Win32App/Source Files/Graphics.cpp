@@ -968,10 +968,20 @@ void Graphics::Begin() {
 	m_lastMainResizeDurationUs = 0;
 	m_lastSceneResizeDurationUs = 0;
 	m_lastSceneResizeCalled = false;
+
+	const auto gpuPollStart = std::chrono::steady_clock::now();
 #endif
 
 #if RESIZE_DIAG_ENABLED
 	PollGpuTimingQueries(); // Every frame; never wait for results.
+#endif
+
+#if RESIZE_DIAG_ENABLED
+	m_lastGpuQueryPollDurationUs =
+		static_cast<unsigned long long>(
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				std::chrono::steady_clock::now() - gpuPollStart
+			).count());
 #endif
 
 	// Apply a pending resize outside the window procedure.

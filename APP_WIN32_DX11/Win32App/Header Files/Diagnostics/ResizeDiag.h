@@ -265,6 +265,7 @@ namespace ResizeDiag
 		unsigned long long sceneApplyUs,
 		unsigned long long mainResizeUs,
 		unsigned long long inputQueueUs,
+		unsigned long long gpuQueryPollUs,
 		unsigned long long graphicsBeginOtherUs,
 		unsigned long long sceneSetupUs,
 		unsigned long long renderSceneUs,
@@ -320,6 +321,7 @@ namespace ResizeDiag
 		{
 			const unsigned long long measuredUs =
 				inputQueueUs +
+				gpuQueryPollUs +
 				mainResizeUs +
 				(sceneApplyCalled ? sceneApplyUs : 0) +
 				graphicsBeginOtherUs +
@@ -336,7 +338,7 @@ namespace ResizeDiag
 				: 0;
 
 			Log("Resize frame #%llu: frame=%llu us Present=%llu us "
-				"outsidePresent=%llu us InputQueue=%llu us "
+				"outsidePresent=%llu us InputQueue=%llu us GpuQueryPoll=%llu us"
 				"MainResize=%llu us ApplySceneResize=%llu us "
 				"GraphicsBeginOther=%llu us SceneSetup=%llu us "
 				"RenderScene=%llu us ImGuiBuild=%llu us "

@@ -99,8 +99,10 @@ void App::DoFrame()
 #if RESIZE_DIAG_ENABLED
 	const auto inputStart = Clock::now();
 #endif
+
 	wnd.ApplyPendingResize();
 	wnd.ApplyQueuedInputToImGui();
+
 #if RESIZE_DIAG_ENABLED
 	const auto inputQueueUs = elapsedUs(inputStart);
 #endif
@@ -110,19 +112,24 @@ void App::DoFrame()
 #if RESIZE_DIAG_ENABLED
 	const auto graphicsBeginStart = Clock::now();
 #endif
+
 	wnd.Gfx().Begin();
+
 #if RESIZE_DIAG_ENABLED
 	const auto graphicsBeginUs = elapsedUs(graphicsBeginStart);
 	const auto mainResizeUs = wnd.Gfx().LastMainResizeDurationUs();
 	const auto sceneApplyUs = wnd.Gfx().LastSceneResizeDurationUs();
+	const auto gpuQueryPollUs = wnd.Gfx().LastGpuQueryPollDurationUs();
 	const bool sceneApplyCalled = wnd.Gfx().LastSceneResizeCalled();
 
-	// Graphics::Begin includes the resize work, so subtract it here to
-	// keep the diagnostic categories non-overlapping.
-	const auto resizeWorkUs = mainResizeUs + sceneApplyUs;
+	// Graphics::Begin includes resize work and GPU-query polling.
+	// Subtract both so GraphicsBeginOther is the remaining time.
+	const auto accountedBeginUs =
+		mainResizeUs + sceneApplyUs + gpuQueryPollUs;
+
 	const auto graphicsBeginOtherUs =
-		graphicsBeginUs > resizeWorkUs
-		? graphicsBeginUs - resizeWorkUs
+		graphicsBeginUs > accountedBeginUs
+		? graphicsBeginUs - accountedBeginUs
 		: 0;
 #endif
 
@@ -160,7 +167,9 @@ void App::DoFrame()
 #if RESIZE_DIAG_ENABLED
 	const auto viewportCallbacksStart = Clock::now();
 #endif
+
 	InstallViewportSizingCallbacks();
+
 #if RESIZE_DIAG_ENABLED
 	const auto viewportCallbacksUs = elapsedUs(viewportCallbacksStart);
 #endif
@@ -177,6 +186,7 @@ void App::DoFrame()
 			sceneApplyUs,
 			mainResizeUs,
 			inputQueueUs,
+			gpuQueryPollUs,
 			graphicsBeginOtherUs,
 			sceneSetupUs,
 			renderSceneUs,
