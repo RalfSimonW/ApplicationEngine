@@ -337,18 +337,20 @@ namespace ResizeDiag
 				? outsidePresentUs - measuredUs
 				: 0;
 
-			Log("Resize frame #%llu: frame=%llu us Present=%llu us "
-				"outsidePresent=%llu us InputQueue=%llu us GpuQueryPoll=%llu us"
-				"MainResize=%llu us ApplySceneResize=%llu us "
-				"GraphicsBeginOther=%llu us SceneSetup=%llu us "
-				"RenderScene=%llu us ImGuiBuild=%llu us "
-				"MainDraw=%llu us Viewports=%llu us "
+			Log(
+				"Resize frame #%llu: frame=%llu us Present=%llu us "
+				"outsidePresent=%llu us InputQueue=%llu us "
+				"GpuQueryPoll=%llu us MainResize=%llu us "
+				"ApplySceneResize=%llu us GraphicsBeginOther=%llu us "
+				"SceneSetup=%llu us RenderScene=%llu us "
+				"ImGuiBuild=%llu us MainDraw=%llu us Viewports=%llu us "
 				"ViewportCallbacks=%llu us other=%llu us",
 				static_cast<unsigned long long>(frameNumber),
 				frameUs,
 				presentUs,
 				outsidePresentUs,
 				inputQueueUs,
+				gpuQueryPollUs,       // This argument was missing.
 				mainResizeUs,
 				sceneApplyUs,
 				graphicsBeginOtherUs,
