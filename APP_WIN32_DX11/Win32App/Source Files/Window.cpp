@@ -12,6 +12,23 @@ namespace
 {
 	constexpr UINT_PTR kResizeDiagEndTimerId = 2;
 	constexpr UINT kResizeDiagSettleDelayMs = 250;
+
+#if RESIZE_DIAG_ENABLED
+	void LogCaptureState(
+		const char* reason,
+		HWND hwnd,
+		HWND previousCapture)
+	{
+		ResizeDiag::Log(
+			"Capture %s hwnd=%p tid=%lu previous=%p current=%p",
+			reason,
+			hwnd,
+			GetCurrentThreadId(),
+			previousCapture,
+			GetCapture());
+	}
+#endif
+
 }
 
 // Window class stuff
@@ -471,7 +488,11 @@ void Window::BeginWindowDrag()
 	GetCursorPos(&gDragStartCursor);
 	GetWindowRect(hWnd, &gDragStartWindow);
 
-	SetCapture(hWnd);
+	const HWND previousCapture = SetCapture(hWnd);
+#if RESIZE_DIAG_ENABLED
+	LogCaptureState("BeginWindowDrag", hWnd, previousCapture);
+#endif
+
 }
 
 void Window::UpdateWindowDrag()
@@ -503,10 +524,15 @@ void Window::EndWindowDrag()
 	if (!gDragging)
 		return;
 
+	const HWND captureBefore = GetCapture();
 	gDragging = false;
 
 	if (GetCapture())
 		ReleaseCapture();
+
+#if RESIZE_DIAG_ENABLED
+	LogCaptureState("EndWindowDrag", hWnd, captureBefore);
+#endif
 }
 
 LRESULT CALLBACK Window::HandleMsgSetup(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noexcept
@@ -705,6 +731,20 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 
 // ---- ---- ---- ---- ---- ---- ---- ---- ---- MOUSE MESSAGES ---- ---- ---- ---- ---- ---- ---- ---- ----
 
+	case WM_CAPTURECHANGED:
+#if RESIZE_DIAG_ENABLED
+		ResizeDiag::Log(
+			"WM_CAPTURECHANGED hwnd=%p tid=%lu newCapture=%p currentCapture=%p "
+			"dragging=%d titleDrag=%d",
+			hWnd,
+			GetCurrentThreadId(),
+			reinterpret_cast<HWND>(lParam),
+			GetCapture(),
+			gDragging ? 1 : 0,
+			titleBarDragActive ? 1 : 0);
+#endif
+		break;
+
 	case WM_MOUSEMOVE:
 	{
 		const POINTS pt = MAKEPOINTS(lParam);
@@ -734,21 +774,26 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 
 			if (!boundaryStateKnown || insideClient != wasInsideClient)
 			{
+				const HWND captureHwnd = GetCapture();
+
 				ResizeDiag::Log(
-					"Mouse boundary hwnd=%p inside=%d client=%ld,%ld "
-					"screen=%ld,%ld screenValid=%d cursorEnabled=%d "
-					"wantsMouse=%d requested=%d current=%p",
+					"Mouse boundary hwnd=%p tid=%lu inside=%d client=%ld,%ld "
+					"screen=%ld,%ld screenValid=%d capture=%p capturedByThis=%d "
+					"buttons=0x%llX dragging=%d titleDrag=%d wantsMouse=%d",
 					hWnd,
+					GetCurrentThreadId(),
 					insideClient ? 1 : 0,
 					clientPt.x,
 					clientPt.y,
 					screenPt.x,
 					screenPt.y,
 					screenPosValid ? 1 : 0,
-					cursorEnabled ? 1 : 0,
-					imguiWantsMouse.load(std::memory_order_relaxed) ? 1 : 0,
-					imguiMouseCursor.load(std::memory_order_relaxed),
-					reinterpret_cast<void*>(::GetCursor()));
+					captureHwnd,
+					captureHwnd == hWnd ? 1 : 0,
+					static_cast<unsigned long long>(wParam),
+					gDragging ? 1 : 0,
+					titleBarDragActive ? 1 : 0,
+					imguiWantsMouse.load(std::memory_order_relaxed) ? 1 : 0);
 
 				boundaryStateKnown = true;
 				wasInsideClient = insideClient;
