@@ -1017,6 +1017,29 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 
 			return TRUE;
 		}
+#if RESIZE_DIAG_ENABLED
+		else
+		{
+			const UINT hitTest = LOWORD(lParam);
+			const UINT mouseMessage = HIWORD(lParam);
+			const int requestedCursor =
+				imguiMouseCursor.load(std::memory_order_relaxed);
+			const HCURSOR currentCursor = ::GetCursor();
+
+			ResizeDiag::Log(
+				"Cursor WM_SETCURSOR-NC hwnd=%p hitTest=%u "
+				"mouseMsg=%u requested=%d enabled=%d "
+				"current=%p currentIsWait=%d",
+				hWnd,
+				static_cast<unsigned int>(hitTest),
+				static_cast<unsigned int>(mouseMessage),
+				requestedCursor,
+				cursorEnabled ? 1 : 0,
+				reinterpret_cast<void*>(currentCursor),
+				currentCursor == ::LoadCursor(nullptr, IDC_WAIT) ? 1 : 0);
+		}
+#endif
+
 		break;
 
 	/************** END MOUSE MESSAGES **************/
@@ -1065,7 +1088,25 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 
 	} // switch
 
-	return DefWindowProc(hWnd, msg, wParam, lParam);
+	const LRESULT result = ::DefWindowProc(hWnd, msg, wParam, lParam);
+
+#if RESIZE_DIAG_ENABLED
+	if (msg == WM_SETCURSOR && LOWORD(lParam) != HTCLIENT)
+	{
+		const HCURSOR cursorAfterDefault = ::GetCursor();
+
+		ResizeDiag::Log(
+			"Cursor WM_SETCURSOR-POST hwnd=%p hitTest=%u "
+			"mouseMsg=%u current=%p currentIsWait=%d",
+			hWnd,
+			static_cast<unsigned int>(LOWORD(lParam)),
+			static_cast<unsigned int>(HIWORD(lParam)),
+			reinterpret_cast<void*>(cursorAfterDefault),
+			cursorAfterDefault == ::LoadCursor(nullptr, IDC_WAIT) ? 1 : 0);
+	}
+#endif
+
+	return result;
 }
 
 

@@ -29,8 +29,8 @@ namespace
 	constexpr UINT_PTR kViewportResizeTimerId = 0xDA11;
 
 	LRESULT CALLBACK ViewportSizingProc(
-		HWND hwnd,
-		UINT message,
+		HWND hWnd,
+		UINT uMsg,
 		WPARAM wParam,
 		LPARAM lParam,
 		UINT_PTR subclassId,
@@ -38,31 +38,55 @@ namespace
 	{
 		auto* app = reinterpret_cast<App*>(refData);
 
-		if (message == WM_ERASEBKGND)
+		if (uMsg == WM_ERASEBKGND)
 		{
 			return 1; // The DX11 swap chain supplies the window contents.
 		}
-		else if (message == WM_ENTERSIZEMOVE)
+		else if (uMsg == WM_ENTERSIZEMOVE)
 		{
-			SetTimer(hwnd, kViewportResizeTimerId, 16, nullptr);
+			SetTimer(hWnd, kViewportResizeTimerId, 16, nullptr);
 		}
-		else if (message == WM_TIMER && wParam == kViewportResizeTimerId)
+		else if (uMsg == WM_TIMER && wParam == kViewportResizeTimerId)
 		{
 			// This runs on the render thread inside the native sizing loop.
 			app->DoFrame();
 			return 0;
 		}
-		else if (message == WM_EXITSIZEMOVE)
+		else if (uMsg == WM_EXITSIZEMOVE)
 		{
-			KillTimer(hwnd, kViewportResizeTimerId);
+			KillTimer(hWnd, kViewportResizeTimerId);
 		}
-		else if (message == WM_NCDESTROY)
+		else if (uMsg == WM_NCDESTROY)
 		{
-			KillTimer(hwnd, kViewportResizeTimerId);
-			RemoveWindowSubclass(hwnd, ViewportSizingProc, subclassId);
+			KillTimer(hWnd, kViewportResizeTimerId);
+			RemoveWindowSubclass(hWnd, ViewportSizingProc, subclassId);
 		}
 
-		return DefSubclassProc(hwnd, message, wParam, lParam);
+		const bool isSetCursor = (uMsg == WM_SETCURSOR);
+		const HCURSOR cursorBefore =
+			isSetCursor ? ::GetCursor() : nullptr;
+
+		const LRESULT result =
+			::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+
+		if (isSetCursor)
+		{
+			const HCURSOR cursorAfter = ::GetCursor();
+
+			ResizeDiag::Log(
+				"Secondary WM_SETCURSOR hwnd=%p hitTest=%u mouseMsg=%u "
+				"before=%p beforeIsWait=%d after=%p afterIsWait=%d",
+				hWnd,
+				static_cast<unsigned int>(LOWORD(lParam)),
+				static_cast<unsigned int>(HIWORD(lParam)),
+				reinterpret_cast<void*>(cursorBefore),
+				cursorBefore == ::LoadCursor(nullptr, IDC_WAIT) ? 1 : 0,
+				reinterpret_cast<void*>(cursorAfter),
+				cursorAfter == ::LoadCursor(nullptr, IDC_WAIT) ? 1 : 0);
+		}
+
+		return result;
+
 	}
 }
 

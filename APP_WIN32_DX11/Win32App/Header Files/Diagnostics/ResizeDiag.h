@@ -97,9 +97,18 @@ namespace ResizeDiag
 		HCURSOR previousCursor,
 		HCURSOR currentCursor)
 	{
+		const HCURSOR systemArrow =
+			::LoadCursor(nullptr, IDC_ARROW);
+		const HCURSOR systemWait =
+			::LoadCursor(nullptr, IDC_WAIT);
+		const HCURSOR systemAppStarting =
+			::LoadCursor(nullptr, IDC_APPSTARTING);
+
 		Log(
 			"Cursor %s hwnd=%p hitTest=%u requested=%d enabled=%d "
-			"selected=%p previous=%p current=%p",
+			"selected=%p previous=%p current=%p "
+			"selectedIsArrow=%d selectedIsWait=%d "
+			"currentIsArrow=%d currentIsWait=%d currentIsAppStarting=%d",
 			stage ? stage : "unknown",
 			hwnd,
 			static_cast<unsigned int>(hitTest),
@@ -107,7 +116,12 @@ namespace ResizeDiag
 			cursorEnabled ? 1 : 0,
 			reinterpret_cast<void*>(selectedCursor),
 			reinterpret_cast<void*>(previousCursor),
-			reinterpret_cast<void*>(currentCursor));
+			reinterpret_cast<void*>(currentCursor),
+			selectedCursor == systemArrow ? 1 : 0,
+			selectedCursor == systemWait ? 1 : 0,
+			currentCursor == systemArrow ? 1 : 0,
+			currentCursor == systemWait ? 1 : 0,
+			currentCursor == systemAppStarting ? 1 : 0);
 	}
 
 	inline void UpdateMax(
