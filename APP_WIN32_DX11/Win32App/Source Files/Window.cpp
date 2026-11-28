@@ -707,30 +707,33 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 
 	case WM_MOUSEMOVE:
 	{
-		UpdateWindowDrag();
-
 		const POINTS pt = MAKEPOINTS(lParam);
+
+		// Convert using the window position that was in effect when this
+		// WM_MOUSEMOVE was received. UpdateWindowDrag() calls SetWindowPos.
+		POINT screenPt{
+			static_cast<LONG>(pt.x),
+			static_cast<LONG>(pt.y)
+		};
+		const BOOL screenPosValid = ClientToScreen(hWnd, &screenPt);
 
 #if RESIZE_DIAG_ENABLED
 		static bool boundaryStateKnown = false;
 		static bool wasInsideClient = false;
-
 		RECT clientRect{};
+
 		if (GetClientRect(hWnd, &clientRect))
 		{
 			const POINT clientPt{
 				static_cast<LONG>(pt.x),
 				static_cast<LONG>(pt.y)
 			};
+
 			const bool insideClient =
 				PtInRect(&clientRect, clientPt) != FALSE;
 
 			if (!boundaryStateKnown || insideClient != wasInsideClient)
 			{
-				POINT screenPt{ clientPt.x, clientPt.y };
-				const BOOL converted =
-					ClientToScreen(hWnd, &screenPt);
-
 				ResizeDiag::Log(
 					"Mouse boundary hwnd=%p inside=%d client=%ld,%ld "
 					"screen=%ld,%ld screenValid=%d cursorEnabled=%d "
@@ -741,7 +744,7 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 					clientPt.y,
 					screenPt.x,
 					screenPt.y,
-					converted ? 1 : 0,
+					screenPosValid ? 1 : 0,
 					cursorEnabled ? 1 : 0,
 					imguiWantsMouse.load(std::memory_order_relaxed) ? 1 : 0,
 					imguiMouseCursor.load(std::memory_order_relaxed),
@@ -753,9 +756,11 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 		}
 #endif
 
-		// Cursorless exclusive gets first dibs
+		// Cursorless exclusive gets first dibs.
 		if (!cursorEnabled)
 		{
+			UpdateWindowDrag();
+
 			if (!mouse.IsInWindow())
 			{
 				SetCapture(hWnd);
@@ -766,8 +771,8 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 		}
 
 		// ImGui multi-viewport mouse positions are screen coordinates.
-		POINT screenPt{ pt.x, pt.y };
-		if (ClientToScreen(hWnd, &screenPt))
+		// Queue before UpdateWindowDrag(), which changes the window position.
+		if (screenPosValid)
 		{
 			InputEvent event{};
 			event.type = InputEvent::Type::MousePosition;
@@ -775,6 +780,8 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 			event.y = static_cast<float>(screenPt.y);
 			QueueInputEvent(event);
 		}
+
+		UpdateWindowDrag();
 
 		if (!imguiWantsMouse.load(std::memory_order_relaxed))
 		{
@@ -791,14 +798,14 @@ LRESULT Window::HandleMsg(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) noe
 				mouse.OnMouseEnter();
 			}
 		}
-		// Not in client -> log move / maintain capture if button down
+		// Not in client -> maintain capture if a button is down.
 		else
 		{
 			if (wParam & (MK_LBUTTON | MK_RBUTTON))
 			{
 				mouse.OnMouseMove(pt.x, pt.y);
 			}
-			// Button up -> release capture / log event for leaving
+			// Button up -> release capture / log event for leaving.
 			else
 			{
 				ReleaseCapture();
