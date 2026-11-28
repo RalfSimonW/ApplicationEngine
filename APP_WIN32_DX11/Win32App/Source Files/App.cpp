@@ -62,31 +62,81 @@ namespace
 			RemoveWindowSubclass(hWnd, ViewportSizingProc, subclassId);
 		}
 
-		const bool isSetCursor = (uMsg == WM_SETCURSOR);
+		const bool traceCursor = (uMsg == WM_SETCURSOR);
+		const bool traceHitTest = (uMsg == WM_NCHITTEST);
+		const bool traceCapture = (uMsg == WM_CAPTURECHANGED);
+
 		const HCURSOR cursorBefore =
-			isSetCursor ? ::GetCursor() : nullptr;
+			(traceCursor || traceCapture) ? ::GetCursor() : nullptr;
+		const HWND captureBefore =
+			(traceCursor || traceCapture) ? ::GetCapture() : nullptr;
 
-		const LRESULT result =
-			::DefSubclassProc(hWnd, uMsg, wParam, lParam);
+		const LRESULT result = ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
 
-		if (isSetCursor)
+		if (traceCursor)
 		{
 			const HCURSOR cursorAfter = ::GetCursor();
+			const HWND captureAfter = ::GetCapture();
 
 			ResizeDiag::Log(
-				"Secondary WM_SETCURSOR hwnd=%p hitTest=%u mouseMsg=%u "
-				"before=%p beforeIsWait=%d after=%p afterIsWait=%d",
+				"Secondary WM_SETCURSOR hwnd=%p tid=%lu "
+				"hitTest=%u mouseMsg=%u "
+				"cursor=%p->%p wait=%d->%d "
+				"capture=%p->%p",
 				hWnd,
+				static_cast<unsigned long>(GetCurrentThreadId()),
 				static_cast<unsigned int>(LOWORD(lParam)),
 				static_cast<unsigned int>(HIWORD(lParam)),
 				reinterpret_cast<void*>(cursorBefore),
-				cursorBefore == ::LoadCursor(nullptr, IDC_WAIT) ? 1 : 0,
 				reinterpret_cast<void*>(cursorAfter),
-				cursorAfter == ::LoadCursor(nullptr, IDC_WAIT) ? 1 : 0);
+				cursorBefore == ::LoadCursor(nullptr, IDC_WAIT) ? 1 : 0,
+				cursorAfter == ::LoadCursor(nullptr, IDC_WAIT) ? 1 : 0,
+				captureBefore,
+				captureAfter);
+		}
+		else if (traceHitTest)
+		{
+			POINT screen{
+					static_cast<short>(LOWORD(lParam)),
+					static_cast<short>(HIWORD(lParam))
+			};
+			POINT client = screen;
+			::ScreenToClient(hWnd, &client);
+
+			RECT rect{};
+			::GetWindowRect(hWnd, &rect);
+
+			ResizeDiag::Log(
+				"Secondary WM_NCHITTEST hwnd=%p tid=%lu "
+				"screen=(%d,%d) client=(%d,%d) "
+				"rect=(%ld,%ld)-(%ld,%ld) result=%lld",
+				hWnd,
+				static_cast<unsigned long>(GetCurrentThreadId()),
+				static_cast<int>(screen.x),
+				static_cast<int>(screen.y),
+				static_cast<int>(client.x),
+				static_cast<int>(client.y),
+				static_cast<long>(rect.left),
+				static_cast<long>(rect.top),
+				static_cast<long>(rect.right),
+				static_cast<long>(rect.bottom),
+				static_cast<long long>(result));
+		}
+		else if (traceCapture)
+		{
+			ResizeDiag::Log(
+				"Secondary WM_CAPTURECHANGED hwnd=%p tid=%lu "
+				"newCapture=%p cursor=%p->%p capture=%p->%p",
+				hWnd,
+				static_cast<unsigned long>(GetCurrentThreadId()),
+				reinterpret_cast<void*>(reinterpret_cast<HWND>(lParam)),
+				reinterpret_cast<void*>(cursorBefore),
+				reinterpret_cast<void*>(::GetCursor()),
+				captureBefore,
+				::GetCapture());
 		}
 
 		return result;
-
 	}
 }
 
