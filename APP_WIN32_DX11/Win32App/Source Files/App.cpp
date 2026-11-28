@@ -25,6 +25,21 @@
 
 namespace
 {
+	ImGuiViewport* FindViewportForHwnd(HWND hwnd)
+	{
+		if (ImGui::GetCurrentContext() == nullptr)
+			return nullptr;
+
+		ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
+		for (int i = 0; i < platformIO.Viewports.Size; ++i)
+		{
+			ImGuiViewport* viewport = platformIO.Viewports[i];
+			if (viewport && viewport->PlatformHandle == hwnd)
+				return viewport;
+		}
+		return nullptr;
+	}
+
 	constexpr UINT_PTR kViewportSubclassId = 0xDA10;
 	constexpr UINT_PTR kViewportResizeTimerId = 0xDA11;
 
@@ -70,6 +85,31 @@ namespace
 			(traceCursor || traceCapture) ? ::GetCursor() : nullptr;
 		const HWND captureBefore =
 			(traceCursor || traceCapture) ? ::GetCapture() : nullptr;
+
+		ImGuiViewport* hitViewport =
+			traceHitTest ? FindViewportForHwnd(hWnd) : nullptr;
+
+		const unsigned int viewportFlags = hitViewport
+			? static_cast<unsigned int>(hitViewport->Flags)
+			: 0u;
+
+		const bool noInputs =
+			(viewportFlags &
+				static_cast<unsigned int>(ImGuiViewportFlags_NoInputs)) != 0;
+
+		DWORD mainThreadId = 0;
+		if (traceHitTest && ImGui::GetCurrentContext() != nullptr)
+		{
+			ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
+			if (platformIO.Viewports.Size > 0 &&
+				platformIO.Viewports[0] &&
+				platformIO.Viewports[0]->PlatformHandle)
+			{
+				HWND mainHwnd =
+					static_cast<HWND>(platformIO.Viewports[0]->PlatformHandle);
+				mainThreadId = GetWindowThreadProcessId(mainHwnd, nullptr);
+			}
+		}
 
 		const LRESULT result = ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
 
