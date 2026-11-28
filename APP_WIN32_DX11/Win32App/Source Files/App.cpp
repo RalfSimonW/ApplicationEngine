@@ -449,11 +449,29 @@ void App::InstallViewportSizingCallbacks()
 
 		HWND hwnd = static_cast<HWND>(viewport->PlatformHandle);
 
-		SetWindowSubclass(
+		DWORD_PTR existingRefData = 0;
+
+		if (!GetWindowSubclass(
 			hwnd,
 			ViewportSizingProc,
 			kViewportSubclassId,
-			reinterpret_cast<DWORD_PTR>(this));
+			&existingRefData))
+		{
+			const BOOL attached = SetWindowSubclass(
+				hwnd,
+				ViewportSizingProc,
+				kViewportSubclassId,
+				reinterpret_cast<DWORD_PTR>(this));
+
+#if RESIZE_DIAG_ENABLED
+			ResizeDiag::Log(
+				"Viewport subclass attach hwnd=%p viewportId=%u success=%d",
+				hwnd,
+				static_cast<unsigned int>(viewport->ID),
+				attached ? 1 : 0);
+#endif
+		}
+
 	}
 }
 
