@@ -25,6 +25,9 @@
 
 namespace
 {
+	constexpr UINT_PTR kViewportSubclassId = 0xDA10;
+	constexpr UINT_PTR kViewportResizeTimerId = 0xDA11;
+
 	ImGuiViewport* FindViewportForHwnd(HWND hwnd)
 	{
 		if (ImGui::GetCurrentContext() == nullptr)
@@ -39,9 +42,6 @@ namespace
 		}
 		return nullptr;
 	}
-
-	constexpr UINT_PTR kViewportSubclassId = 0xDA10;
-	constexpr UINT_PTR kViewportResizeTimerId = 0xDA11;
 
 	LRESULT CALLBACK ViewportSizingProc(
 		HWND hWnd,
@@ -137,8 +137,8 @@ namespace
 		else if (traceHitTest)
 		{
 			POINT screen{
-					static_cast<short>(LOWORD(lParam)),
-					static_cast<short>(HIWORD(lParam))
+				static_cast<short>(LOWORD(lParam)),
+				static_cast<short>(HIWORD(lParam))
 			};
 			POINT client = screen;
 			::ScreenToClient(hWnd, &client);
@@ -146,21 +146,77 @@ namespace
 			RECT rect{};
 			::GetWindowRect(hWnd, &rect);
 
-			ResizeDiag::Log(
-				"Secondary WM_NCHITTEST hwnd=%p tid=%lu "
-				"screen=(%d,%d) client=(%d,%d) "
-				"rect=(%ld,%ld)-(%ld,%ld) result=%lld",
-				hWnd,
-				static_cast<unsigned long>(GetCurrentThreadId()),
-				static_cast<int>(screen.x),
-				static_cast<int>(screen.y),
-				static_cast<int>(client.x),
-				static_cast<int>(client.y),
-				static_cast<long>(rect.left),
-				static_cast<long>(rect.top),
-				static_cast<long>(rect.right),
-				static_cast<long>(rect.bottom),
-				static_cast<long long>(result));
+			ImGuiViewport* hitViewport = FindViewportForHwnd(hWnd);
+			const unsigned int viewportFlags = hitViewport
+				? static_cast<unsigned int>(hitViewport->Flags)
+				: 0u;
+			const unsigned int viewportId = hitViewport
+				? static_cast<unsigned int>(hitViewport->ID)
+				: 0u;
+			const bool noInputs =
+				(viewportFlags &
+					static_cast<unsigned int>(ImGuiViewportFlags_NoInputs)) != 0;
+
+			DWORD mainThreadId = 0;
+			if (ImGui::GetCurrentContext() != nullptr)
+			{
+				ImGuiPlatformIO& platformIO = ImGui::GetPlatformIO();
+				if (platformIO.Viewports.Size > 0 &&
+					platformIO.Viewports[0] &&
+					platformIO.Viewports[0]->PlatformHandle)
+				{
+					HWND mainHwnd =
+						static_cast<HWND>(platformIO.Viewports[0]->PlatformHandle);
+					mainThreadId = GetWindowThreadProcessId(mainHwnd, nullptr);
+				}
+			}
+
+			// Emit the first hit-test record, then only log changes.
+			static thread_local bool havePrevious = false;
+			static thread_local HWND previousHwnd = nullptr;
+			static thread_local unsigned int previousFlags = 0;
+			static thread_local unsigned int previousViewportId = 0;
+			static thread_local DWORD previousMainThreadId = 0;
+			static thread_local LRESULT previousResult = 0;
+
+			const bool changed =
+				!havePrevious ||
+				hWnd != previousHwnd ||
+				viewportFlags != previousFlags ||
+				viewportId != previousViewportId ||
+				mainThreadId != previousMainThreadId ||
+				result != previousResult;
+
+			if (changed)
+			{
+				ResizeDiag::Log(
+					"Secondary WM_NCHITTEST hwnd=%p tid=%lu mainTid=%lu "
+					"viewportId=%u flags=0x%08X noInputs=%d "
+					"screen=(%d,%d) client=(%d,%d) "
+					"rect=(%ld,%ld)-(%ld,%ld) result=%lld",
+					hWnd,
+					static_cast<unsigned long>(GetCurrentThreadId()),
+					static_cast<unsigned long>(mainThreadId),
+					viewportId,
+					viewportFlags,
+					noInputs ? 1 : 0,
+					static_cast<int>(screen.x),
+					static_cast<int>(screen.y),
+					static_cast<int>(client.x),
+					static_cast<int>(client.y),
+					static_cast<long>(rect.left),
+					static_cast<long>(rect.top),
+					static_cast<long>(rect.right),
+					static_cast<long>(rect.bottom),
+					static_cast<long long>(result));
+
+				previousHwnd = hWnd;
+				previousFlags = viewportFlags;
+				previousViewportId = viewportId;
+				previousMainThreadId = mainThreadId;
+				previousResult = result;
+				havePrevious = true;
+			}
 		}
 		else if (traceCapture)
 		{
